@@ -71,6 +71,20 @@ class ReceiptUploadView(HomeAssistantView):
         image = form.get("image")
         text = form.get("text") or ""
         scanned = form.get("scanned_at")
+        receipt_id = form.get("receipt_id")
+        if isinstance(receipt_id, str) and receipt_id and isinstance(image, web.FileField):
+            # Image for a receipt that already exists (sent by the Android app after syncing it)
+            try:
+                store.get_receipt(receipt_id)
+            except NotFound:
+                return self.json_message("Receipt not found", HTTPStatus.NOT_FOUND)
+            name = await _save_upload(hass, receipts_dir(hass), image)
+            if name is None:
+                return self.json_message("Image too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            old = store.attach_receipt_file(receipt_id, name)
+            if old:
+                await hass.async_add_executor_job(remove_files, hass, [old])
+            return self.json(store.get_receipt(receipt_id))
         if not isinstance(trip_id, str) or not isinstance(image, web.FileField):
             return self.json_message("trip_id and image are required", HTTPStatus.BAD_REQUEST)
         try:
@@ -123,6 +137,15 @@ class ItemPhotoUploadView(HomeAssistantView):
         form = await request.post()
         item_id = form.get("item_id")
         image = form.get("image")
+        if isinstance(item_id, str) and form.get("remove"):
+            # Photo removed in the Android app
+            try:
+                old = store.set_item_photo(item_id, None)
+            except NotFound:
+                return self.json_message("Item not found", HTTPStatus.NOT_FOUND)
+            if old:
+                await hass.async_add_executor_job(remove_photos, hass, [old])
+            return self.json({"photo": None})
         if not isinstance(item_id, str) or not isinstance(image, web.FileField):
             return self.json_message("item_id and image are required", HTTPStatus.BAD_REQUEST)
         try:
@@ -178,3 +201,31 @@ class AndroidImportView(HomeAssistantView):
             return self.json(store.import_android(backup))
         except ValueError as err:
             return self.json_message(str(err), HTTPStatus.CONFLICT)
+
+
+class SyncView(HomeAssistantView):
+    """POST /api/shopping_trips/sync: {since, changes, deletes} from the Android app; replies with changes since."""
+
+    url = f"/api/{DOMAIN}/sync"
+    name = f"api:{DOMAIN}:sync"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app[KEY_HASS]
+        store: ShoppingStore | None = hass.data.get(DOMAIN)
+        if store is None:
+            return self.json_message("Shopping Trips isn't set up", HTTPStatus.SERVICE_UNAVAILABLE)
+        try:
+            body = await request.json()
+            since = int(body.get("since") or 0)
+            changes = body.get("changes") or {}
+            deletes = body.get("deletes") or []
+        except (ValueError, AttributeError, TypeError):
+            return self.json_message("Invalid sync request", HTTPStatus.BAD_REQUEST)
+        result = store.sync(since, changes, deletes)
+        files, photos = result.pop("files"), result.pop("photos")
+        if files:
+            await hass.async_add_executor_job(remove_files, hass, files)
+        if photos:
+            await hass.async_add_executor_job(remove_photos, hass, photos)
+        return self.json(result)

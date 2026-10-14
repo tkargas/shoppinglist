@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.6.0";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 import time
 from typing import Any
 import uuid
@@ -34,12 +35,23 @@ class NotFound(Exception):
     """Raised when a list or item id doesn't exist."""
 
 
+# What the Android app syncs. Every change to one of these gets the next "rev" number; deletions leave a
+# tombstone in data["deleted"]. last_unit_price is worked out on each side, so it isn't tracked.
+SYNC_KINDS = ("lists", "items", "trips", "records", "receipts")
+_UNTRACKED = {"rev", "last_unit_price"}
+
+
+def _fingerprint(entity: dict[str, Any]) -> str:
+    return json.dumps({k: v for k, v in entity.items() if k not in _UNTRACKED}, sort_keys=True, default=str)
+
+
 class ShoppingStore:
     """Holds all data in memory, saves it with a short delay and notifies listeners on every change."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._listeners: list[Callable[[], None]] = []
+        self._prints: dict[tuple[str, str], str] = {}
         self.data: dict[str, Any] = {}
 
     async def async_load(self) -> None:
@@ -53,8 +65,16 @@ class ShoppingStore:
                 "receipts": [],
             }
         # Data saved by older versions may lack newer sections
-        for key in ("items", "trips", "records", "receipts"):
+        for key in ("items", "trips", "records", "receipts", "deleted"):
             data.setdefault(key, [])
+        data.setdefault("rev", 0)
+        # Records saved before sync existed count as changed once, so a first sync sends them
+        for kind in SYNC_KINDS:
+            for entity in data[kind]:
+                if "rev" not in entity:
+                    entity["rev"] = 1
+                    data["rev"] = max(data["rev"], 1)
+                self._prints[(kind, entity["id"])] = _fingerprint(entity)
         self.data = data
 
     # ── Change notification ────────────────────────────────────────────────
@@ -74,6 +94,7 @@ class ShoppingStore:
     @callback
     def _changed(self) -> None:
         self._refresh_last_prices()
+        self._track_changes()
         self._store.async_delay_save(lambda: self.data, 1)
         for listener in list(self._listeners):
             listener()
@@ -88,6 +109,25 @@ class ShoppingStore:
             "receipts": self.data["receipts"],
             "version": VERSION,
         }
+
+    def _track_changes(self) -> None:
+        """Gives everything added or changed since the last check the next rev number, and records deletions."""
+        rev = self.data["rev"]
+        seen: set[tuple[str, str]] = set()
+        for kind in SYNC_KINDS:
+            for entity in self.data[kind]:
+                key = (kind, entity["id"])
+                seen.add(key)
+                fingerprint = _fingerprint(entity)
+                if self._prints.get(key) != fingerprint:
+                    rev += 1
+                    entity["rev"] = rev
+                    self._prints[key] = fingerprint
+        for key in [k for k in self._prints if k not in seen]:
+            rev += 1
+            self.data["deleted"].append({"kind": key[0], "id": key[1], "rev": rev})
+            del self._prints[key]
+        self.data["rev"] = rev
 
     def _refresh_last_prices(self) -> None:
         """Each item's last unit price: newest trip first, falling back to earlier trips (names match case-insensitively)."""
@@ -366,6 +406,15 @@ class ShoppingStore:
         return receipt
 
     @callback
+    def attach_receipt_file(self, receipt_id: str, file: str) -> str | None:
+        """Sets the image of an existing receipt; returns the replaced file to remove."""
+        receipt = self.get_receipt(receipt_id)
+        old = receipt.get("file") or None
+        receipt["file"] = file
+        self._changed()
+        return old if old != file else None
+
+    @callback
     def set_receipt_text(self, receipt_id: str, text: str) -> None:
         self.get_receipt(receipt_id)["text"] = text
         self._changed()
@@ -587,4 +636,128 @@ class ShoppingStore:
                 "trip_items": len(record_map),
                 "text_only_receipts": text_only,
             },
+        }
+
+    # ── Two-way sync with the Android app ──────────────────────────────────
+
+    @callback
+    def sync(self, since: int, changes: dict[str, list[dict[str, Any]]], deletes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Applies the app's changes (the app's version wins), then returns everything changed after [since].
+
+        Images aren't part of this: they're uploaded and downloaded separately. Returns the new rev, the changed
+        records, tombstones, and image files that deletions made unused (key "files": receipts, "photos": items).
+        """
+        lists_by = {l["id"]: l for l in self.lists}
+        for e in changes.get("lists", []):
+            lst = lists_by.get(e["id"])
+            if lst is None:
+                lst = {"id": e["id"], "created_at": e.get("created_at") or _now()}
+                self.lists.append(lst)
+                lists_by[lst["id"]] = lst
+            lst["name"] = str(e.get("name") or "").strip() or lst.get("name") or "Shopping List"
+
+        items_by = {i["id"]: i for i in self.data["items"]}
+        for e in changes.get("items", []):
+            if e.get("list_id") not in lists_by:
+                continue
+            item = items_by.get(e["id"])
+            if item is None:
+                item = {"id": e["id"], "photo": None, "last_unit_price": None}
+                self.data["items"].append(item)
+                items_by[item["id"]] = item
+            item.update(
+                list_id=e["list_id"],
+                name=str(e.get("name") or "").strip() or item.get("name") or "?",
+                quantity=max(1, int(e.get("quantity") or 1)),
+                unit=e.get("unit") or "",
+                category=e.get("category") or "",
+                notes=e.get("notes") or "",
+                is_purchased=bool(e.get("is_purchased")),
+                is_skipped=bool(e.get("is_skipped")),
+                in_trip=bool(e.get("in_trip", True)),
+                is_favourite=bool(e.get("is_favourite")),
+                barcode=e.get("barcode") or None,
+                added_at=e.get("added_at") or _now(),
+                purchased_at=e.get("purchased_at"),
+            )
+
+        trips_by = {t["id"]: t for t in self.data["trips"]}
+        first_list = self.lists[0]["id"]
+        for e in changes.get("trips", []):
+            list_id = e.get("list_id") if e.get("list_id") in lists_by else first_list
+            trip = trips_by.get(e["id"])
+            if trip is None:
+                trip = {"id": e["id"]}
+                self.data["trips"].append(trip)
+                trips_by[trip["id"]] = trip
+            trip.update(
+                list_id=list_id,
+                list_name=e.get("list_name") or lists_by[list_id]["name"],
+                store=e.get("store") or "",
+                finished_at=e.get("finished_at") or _now(),
+            )
+
+        records_by = {r["id"]: r for r in self.data["records"]}
+        for e in sorted(changes.get("records", []), key=lambda r: r.get("parent_id") is not None):
+            if e.get("trip_id") not in trips_by:
+                continue
+            record = records_by.get(e["id"])
+            if record is None:
+                record = {"id": e["id"]}
+                self.data["records"].append(record)
+                records_by[record["id"]] = record
+            record.update(
+                trip_id=e["trip_id"],
+                parent_id=e.get("parent_id") if e.get("parent_id") in records_by else None,
+                item_id=e.get("item_id") if e.get("item_id") in items_by else None,
+                name=str(e.get("name") or "").strip() or record.get("name") or "?",
+                quantity=float(e.get("quantity") or 1),
+                unit_price=float(e["unit_price"]) if e.get("unit_price") is not None else None,
+                total=float(e["total"]) if e.get("total") is not None else None,
+                total_override=bool(e.get("total_override")),
+                purchased_at=e.get("purchased_at") or trips_by[e["trip_id"]]["finished_at"],
+            )
+
+        receipts_by = {r["id"]: r for r in self.data["receipts"]}
+        for e in changes.get("receipts", []):
+            if e.get("trip_id") not in trips_by:
+                continue
+            receipt = receipts_by.get(e["id"])
+            if receipt is None:
+                receipt = {"id": e["id"], "file": ""}
+                self.data["receipts"].append(receipt)
+                receipts_by[receipt["id"]] = receipt
+            receipt.update(trip_id=e["trip_id"], text=e.get("text") or "", scanned_at=e.get("scanned_at") or _now())
+
+        files: list[str] = []
+        photos: list[str] = []
+        for d in deletes:
+            kind, gone = d.get("kind"), d.get("id")
+            if kind == "lists" and gone in lists_by and len(self.lists) > 1:
+                photos += [i["photo"] for i in self.data["items"] if i["list_id"] == gone and i.get("photo")]
+                self.data["lists"] = [l for l in self.lists if l["id"] != gone]
+                self.data["items"] = [i for i in self.data["items"] if i["list_id"] != gone]
+            elif kind == "items":
+                photos += [i["photo"] for i in self.data["items"] if i["id"] == gone and i.get("photo")]
+                self.data["items"] = [i for i in self.data["items"] if i["id"] != gone]
+            elif kind == "trips":
+                files += [r["file"] for r in self.data["receipts"] if r["trip_id"] == gone and r.get("file")]
+                self.data["trips"] = [t for t in self.data["trips"] if t["id"] != gone]
+                self.data["records"] = [r for r in self.data["records"] if r["trip_id"] != gone]
+                self.data["receipts"] = [r for r in self.data["receipts"] if r["trip_id"] != gone]
+            elif kind == "records":
+                self.data["records"] = [
+                    r for r in self.data["records"] if r["id"] != gone and r.get("parent_id") != gone
+                ]
+            elif kind == "receipts":
+                files += [r["file"] for r in self.data["receipts"] if r["id"] == gone and r.get("file")]
+                self.data["receipts"] = [r for r in self.data["receipts"] if r["id"] != gone]
+
+        self._changed()
+        return {
+            "rev": self.data["rev"],
+            "changes": {kind: [e for e in self.data[kind] if e.get("rev", 0) > since] for kind in SYNC_KINDS},
+            "deletes": [d for d in self.data["deleted"] if d["rev"] > since],
+            "files": files,
+            "photos": photos,
         }

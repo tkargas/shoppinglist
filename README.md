@@ -91,3 +91,18 @@ Everything is stored in HA's `.storage/shopping_trips` file and is included in H
 Lists and items are matched by name, so nothing already in Home Assistant is duplicated or changed. Trips
 keep their dates, stores, prices, sub-items and total overrides; receipts keep their text and scan dates.
 Photos are resized and uploaded one by one. The same backup can only be imported once.
+
+## Keeping the Android app in sync
+
+The Android app (version 30 or later) syncs both ways with this integration and keeps working on its own
+when Home Assistant can't be reached.
+
+1. In Home Assistant, open your profile → **Security** → **Long-lived access tokens** → **Create token**.
+2. In the app: **Settings → Home Assistant sync**, enter your Home Assistant address (one that works away
+   from home too, e.g. your Nabu Casa URL) and the token, then **Save & sync**.
+
+The app syncs when it opens, every 20 seconds while it's in use, and when you leave it; **Sync now** forces a
+sync. Lists, items, trips, trip items and receipts sync, and receipt and item photos are uploaded and
+downloaded in the background. If the same thing was changed in both places while they were apart, the phone's
+change wins. On the first sync, anything already brought across with the one-off migration is matched up
+rather than duplicated.
