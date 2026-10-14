@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, STATE_BOUGHT, STATE_PENDING
+from .receipt_views import remove_photos
 from .store import NotFound, ShoppingStore
 
 
@@ -108,5 +109,8 @@ class ShoppingListTodo(TodoListEntity):
             self._store.set_state(current["id"], STATE_PENDING)
 
     async def async_delete_todo_items(self, uids: list[str]) -> None:
+        photos: list[str] = []
         for uid in uids:
-            self._store.delete_item(uid)
+            photos += self._store.delete_item(uid)
+        if photos:
+            await self.hass.async_add_executor_job(remove_photos, self.hass, photos)

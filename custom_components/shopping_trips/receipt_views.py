@@ -1,4 +1,4 @@
-"""HTTP endpoints for receipt images: upload from the card, and serve them back (HA login required for both)."""
+"""HTTP endpoints for receipt and item photos: upload from the card, and serve them back (HA login required)."""
 
 from __future__ import annotations
 
@@ -23,11 +23,35 @@ def receipts_dir(hass: HomeAssistant) -> Path:
     return Path(hass.config.path(DOMAIN, "receipts"))
 
 
-def remove_files(hass: HomeAssistant, names: list[str]) -> None:
-    """Deletes receipt image files (run in the executor)."""
-    folder = receipts_dir(hass)
+def photos_dir(hass: HomeAssistant) -> Path:
+    return Path(hass.config.path(DOMAIN, "photos"))
+
+
+def remove_files(hass: HomeAssistant, names: list[str], folder: Path | None = None) -> None:
+    """Deletes image files (run in the executor); receipts by default."""
+    folder = folder or receipts_dir(hass)
     for name in names:
-        (folder / Path(name).name).unlink(missing_ok=True)
+        if name:
+            (folder / Path(name).name).unlink(missing_ok=True)
+
+
+def remove_photos(hass: HomeAssistant, names: list[str]) -> None:
+    remove_files(hass, names, photos_dir(hass))
+
+
+async def _save_upload(hass: HomeAssistant, folder: Path, image: web.FileField) -> str | None:
+    """Writes an uploaded image under a new random name; None if it's too large."""
+    name = f"{uuid.uuid4().hex}.jpg"
+
+    def save() -> bool:
+        folder.mkdir(parents=True, exist_ok=True)
+        data = image.file.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES:
+            return False
+        (folder / name).write_bytes(data)
+        return True
+
+    return name if await hass.async_add_executor_job(save) else None
 
 
 class ReceiptUploadView(HomeAssistantView):
@@ -53,19 +77,8 @@ class ReceiptUploadView(HomeAssistantView):
         except NotFound:
             return self.json_message("Trip not found", HTTPStatus.NOT_FOUND)
 
-        name = f"{uuid.uuid4().hex}.jpg"
-
-        def save() -> int:
-            folder = receipts_dir(hass)
-            folder.mkdir(parents=True, exist_ok=True)
-            data = image.file.read(MAX_IMAGE_BYTES + 1)
-            if len(data) > MAX_IMAGE_BYTES:
-                return -1
-            (folder / name).write_bytes(data)
-            return len(data)
-
-        size = await hass.async_add_executor_job(save)
-        if size < 0:
+        name = await _save_upload(hass, receipts_dir(hass), image)
+        if name is None:
             return self.json_message("Image too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         receipt = store.add_receipt(trip_id, name, str(text))
         return self.json(receipt)
@@ -91,3 +104,51 @@ class ReceiptImageView(HomeAssistantView):
         if not await hass.async_add_executor_job(path.is_file):
             return web.Response(status=HTTPStatus.NOT_FOUND)
         return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+
+
+class ItemPhotoUploadView(HomeAssistantView):
+    """POST /api/shopping_trips/item_photo: multipart form with item_id and image; replaces any earlier photo."""
+
+    url = f"/api/{DOMAIN}/item_photo"
+    name = f"api:{DOMAIN}:item_photo_upload"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app[KEY_HASS]
+        store: ShoppingStore | None = hass.data.get(DOMAIN)
+        if store is None:
+            return self.json_message("Shopping Trips isn't set up", HTTPStatus.SERVICE_UNAVAILABLE)
+        form = await request.post()
+        item_id = form.get("item_id")
+        image = form.get("image")
+        if not isinstance(item_id, str) or not isinstance(image, web.FileField):
+            return self.json_message("item_id and image are required", HTTPStatus.BAD_REQUEST)
+        try:
+            store.get_item(item_id)
+        except NotFound:
+            return self.json_message("Item not found", HTTPStatus.NOT_FOUND)
+        name = await _save_upload(hass, photos_dir(hass), image)
+        if name is None:
+            return self.json_message("Image too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        old = store.set_item_photo(item_id, name)
+        if old:
+            await hass.async_add_executor_job(remove_photos, hass, [old])
+        return self.json({"photo": name})
+
+
+class ItemPhotoView(HomeAssistantView):
+    """GET /api/shopping_trips/item_photo/{photo}: each upload gets a new name, so URLs never go stale."""
+
+    url = f"/api/{DOMAIN}/item_photo/{{photo}}"
+    name = f"api:{DOMAIN}:item_photo"
+    requires_auth = True
+
+    async def get(self, request: web.Request, photo: str) -> web.StreamResponse:
+        hass: HomeAssistant = request.app[KEY_HASS]
+        store: ShoppingStore | None = hass.data.get(DOMAIN)
+        if store is None or store.item_with_photo(photo) is None:
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        path = photos_dir(hass) / Path(photo).name
+        if not await hass.async_add_executor_job(path.is_file):
+            return web.Response(status=HTTPStatus.NOT_FOUND)
+        return web.FileResponse(path, headers={"Cache-Control": "private, max-age=604800"})

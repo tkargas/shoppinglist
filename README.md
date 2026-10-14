@@ -11,7 +11,7 @@ automations. The **Shopping Trips card** gives the full app experience on a dash
 | 1 | Lists, items, swipe to cross off (bought / not bought), to-do entities, dashboard card | ✅ Done |
 | 2 | Finish Shopping, trips, trip items and sub-items, unit price × quantity, total override, last price | ✅ Done |
 | 3 | Receipts: camera, several photos, full-screen zoom, text reading, mapping lines to items, new trip from receipt | ✅ Done |
-| 4 | Item details (category, favourite, photo, barcode), CSV import/export, settings | Planned |
+| 4 | Item details (category, favourite, photo, barcode), CSV import/export, settings | ✅ Done |
 
 ## Install
 
@@ -39,7 +39,10 @@ list: Shopping List   # optional: which list to open first
 - **Swipe right** (or tap): crossed off as **bought** — it goes into the current trip.
 - **Swipe left**: crossed off as **not bought** — left out of the trip.
 - Tap a crossed-off item to put it back on the list.
-- ⓘ on a row opens the item: name, quantity (− FEWER / + MORE), favourite, category, list, note, last unit price, delete.
+- ⓘ on a row opens the item: name, quantity (− FEWER / + MORE), favourite, category, list, barcode (type it or
+  SCAN a photo of it), note, photo (take or choose), last unit price, delete.
+- ⋮ next to the list name also has **Export list (CSV)**, **Import list (CSV)** (same format as the Android
+  app) and **Settings**, which shows the card and integration versions.
 - Add items by typing, or pick an existing item from the suggestions.
 - ⋮ next to the list name: new, rename or delete lists.
 - **Finish Shopping** saves the bought items as a trip; they stay crossed off on the list.
@@ -55,8 +58,10 @@ list: Shopping List   # optional: which list to open first
   the detected items, set the store and date, and Create.
 
 Receipt text is read in the browser with [Tesseract.js](https://tesseract.projectnaptha.com/), which is
-downloaded from the internet the first time it's used. Receipt images are stored in
-`config/shopping_trips/receipts/` and are only served to logged-in users.
+downloaded from the internet the first time it's used. Barcodes are read with the
+browser's own detector where available, otherwise [html5-qrcode](https://github.com/mebjas/html5-qrcode),
+also downloaded on first use. Receipt and item photos are stored in `config/shopping_trips/receipts/` and
+`config/shopping_trips/photos/`, and are only served to logged-in users.
 
 After updating the integration, refresh the browser (or the Companion app) so the new card version loads.
 

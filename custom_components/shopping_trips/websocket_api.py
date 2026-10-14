@@ -12,7 +12,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN, STATE_BOUGHT, STATE_PENDING, STATE_SKIPPED
-from .receipt_views import remove_files
+from .receipt_views import remove_files, remove_photos
 from .store import NotFound, ShoppingStore
 
 
@@ -55,6 +55,8 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_trip_create,
         ws_receipt_set_text,
         ws_receipt_delete,
+        ws_item_remove_photo,
+        ws_items_import,
     ):
         websocket_api.async_register_command(hass, command)
 
@@ -104,7 +106,7 @@ def ws_list_rename(hass, connection, msg) -> None:
 @callback
 @_handles_errors
 def ws_list_delete(hass, connection, msg) -> None:
-    _store(hass).delete_list(msg["list_id"])
+    hass.async_add_executor_job(remove_photos, hass, _store(hass).delete_list(msg["list_id"]))
     connection.send_result(msg["id"])
 
 
@@ -134,6 +136,7 @@ def ws_item_add(hass, connection, msg) -> None:
         vol.Optional("category"): str,
         vol.Optional("notes"): str,
         vol.Optional("is_favourite"): bool,
+        vol.Optional("barcode"): vol.Any(None, str),
         vol.Optional("list_id"): str,
     }
 )
@@ -163,7 +166,7 @@ def ws_item_set_state(hass, connection, msg) -> None:
 @callback
 @_handles_errors
 def ws_item_delete(hass, connection, msg) -> None:
-    _store(hass).delete_item(msg["item_id"])
+    hass.async_add_executor_job(remove_photos, hass, _store(hass).delete_item(msg["item_id"]))
     connection.send_result(msg["id"])
 
 
@@ -173,7 +176,7 @@ def ws_item_delete(hass, connection, msg) -> None:
 @callback
 @_handles_errors
 def ws_items_delete_crossed(hass, connection, msg) -> None:
-    _store(hass).delete_crossed(msg["list_id"])
+    hass.async_add_executor_job(remove_photos, hass, _store(hass).delete_crossed(msg["list_id"]))
     connection.send_result(msg["id"])
 
 
@@ -288,3 +291,33 @@ def ws_receipt_delete(hass, connection, msg) -> None:
     file = _store(hass).delete_receipt(msg["receipt_id"])
     hass.async_add_executor_job(remove_files, hass, [file])
     connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/item/remove_photo", vol.Required("item_id"): str})
+@callback
+@_handles_errors
+def ws_item_remove_photo(hass, connection, msg) -> None:
+    old = _store(hass).set_item_photo(msg["item_id"], None)
+    if old:
+        hass.async_add_executor_job(remove_photos, hass, [old])
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/items/import",
+        vol.Required("list_id"): str,
+        vol.Required("items"): [
+            {
+                vol.Required("name"): str,
+                vol.Optional("quantity"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Optional("unit"): str,
+                vol.Optional("notes"): str,
+            }
+        ],
+    }
+)
+@callback
+@_handles_errors
+def ws_items_import(hass, connection, msg) -> None:
+    connection.send_result(msg["id"], {"count": _store(hass).import_items(msg["list_id"], msg["items"])})

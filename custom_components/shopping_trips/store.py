@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    VERSION,
     DEFAULT_LIST_NAME,
     STATE_BOUGHT,
     STATE_PENDING,
@@ -85,6 +86,7 @@ class ShoppingStore:
             "trips": self.data["trips"],
             "records": self.data["records"],
             "receipts": self.data["receipts"],
+            "version": VERSION,
         }
 
     def _refresh_last_prices(self) -> None:
@@ -127,14 +129,16 @@ class ShoppingStore:
         self._changed()
 
     @callback
-    def delete_list(self, list_id: str) -> None:
-        """Deletes a list and its items. The last remaining list can't be deleted."""
+    def delete_list(self, list_id: str) -> list[str]:
+        """Deletes a list and its items (the last list can't be deleted); returns item photo files to remove."""
         self.get_list(list_id)
         if len(self.lists) <= 1:
             raise ValueError("Can't delete the only list")
+        photos = [i["photo"] for i in self.items_for(list_id) if i.get("photo")]
         self.data["lists"] = [lst for lst in self.lists if lst["id"] != list_id]
         self.data["items"] = [i for i in self.data["items"] if i["list_id"] != list_id]
         self._changed()
+        return photos
 
     # ── Items ──────────────────────────────────────────────────────────────
 
@@ -194,7 +198,7 @@ class ShoppingStore:
 
     @callback
     def update_item(self, item_id: str, changes: dict[str, Any]) -> None:
-        """Updates editable fields (name, quantity, unit, category, notes, favourite, list)."""
+        """Updates editable fields (name, quantity, unit, category, notes, favourite, barcode, list)."""
         item = self.get_item(item_id)
         if "list_id" in changes:
             self.get_list(changes["list_id"])
@@ -218,18 +222,53 @@ class ShoppingStore:
         self._changed()
 
     @callback
-    def delete_item(self, item_id: str) -> None:
-        self.get_item(item_id)
+    def delete_item(self, item_id: str) -> list[str]:
+        """Deletes an item; returns its photo file to remove, if any."""
+        item = self.get_item(item_id)
         self.data["items"] = [i for i in self.data["items"] if i["id"] != item_id]
         self._changed()
+        return [item["photo"]] if item.get("photo") else []
 
     @callback
-    def delete_crossed(self, list_id: str) -> None:
-        """Deletes every crossed-off item in a list."""
+    def delete_crossed(self, list_id: str) -> list[str]:
+        """Deletes every crossed-off item in a list; returns their photo files to remove."""
+        gone = [i for i in self.items_for(list_id) if i["is_purchased"]]
         self.data["items"] = [
             i for i in self.data["items"] if not (i["list_id"] == list_id and i["is_purchased"])
         ]
         self._changed()
+        return [i["photo"] for i in gone if i.get("photo")]
+
+    @callback
+    def set_item_photo(self, item_id: str, photo: str | None) -> str | None:
+        """Sets (or clears) an item's photo file; returns the replaced file to remove."""
+        item = self.get_item(item_id)
+        old = item.get("photo")
+        item["photo"] = photo
+        self._changed()
+        return old if old != photo else None
+
+    def item_with_photo(self, photo: str) -> dict[str, Any] | None:
+        return next((i for i in self.data["items"] if i.get("photo") == photo), None)
+
+    @callback
+    def import_items(self, list_id: str, rows: list[dict[str, Any]]) -> int:
+        """Adds imported CSV rows to a list (an item already on the list is reused, like typing it in),
+        then applies the row's quantity, unit and note. Returns how many rows were imported."""
+        count = 0
+        for row in rows:
+            name = str(row.get("name", "")).strip()
+            if not name:
+                continue
+            item = self.add_item(list_id, name)
+            item["quantity"] = max(1, int(row.get("quantity") or 1))
+            if row.get("unit"):
+                item["unit"] = str(row["unit"]).strip()
+            if row.get("notes"):
+                item["notes"] = str(row["notes"]).strip()
+            count += 1
+        self._changed()
+        return count
 
     # ── Trips ──────────────────────────────────────────────────────────────
 

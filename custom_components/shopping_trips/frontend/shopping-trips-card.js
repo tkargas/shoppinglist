@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.3.1";
+const CARD_VERSION = "0.4.0";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -45,29 +45,31 @@ async function shrinkImage(file, max = 2000) {
 }
 
 const TESSERACT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-let tesseractLoading = null;
+const HTML5_QRCODE_URL = "https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
+const scriptLoads = {};
 let tesseractWorker = null;
 
-function loadTesseract() {
-  if (window.Tesseract) return Promise.resolve(window.Tesseract);
-  if (!tesseractLoading) {
-    tesseractLoading = new Promise((resolve, reject) => {
+/** Loads a library script once and resolves to the global it defines. */
+function loadScript(url, globalName, what) {
+  if (window[globalName]) return Promise.resolve(window[globalName]);
+  if (!scriptLoads[url]) {
+    scriptLoads[url] = new Promise((resolve, reject) => {
       const s = document.createElement("script");
-      s.src = TESSERACT_URL;
-      s.onload = () => resolve(window.Tesseract);
+      s.src = url;
+      s.onload = () => resolve(window[globalName]);
       s.onerror = () => {
-        tesseractLoading = null;
-        reject(new Error("Couldn't load the text reader. It needs an internet connection the first time."));
+        delete scriptLoads[url];
+        reject(new Error(`Couldn't load the ${what}. It needs an internet connection the first time.`));
       };
       document.head.appendChild(s);
     });
   }
-  return tesseractLoading;
+  return scriptLoads[url];
 }
 
 /** Reads the text on a receipt image, line by line (amounts stay on the same line as their items). */
 async function readReceiptText(blob) {
-  const T = await loadTesseract();
+  const T = await loadScript(TESSERACT_URL, "Tesseract", "text reader");
   if (!tesseractWorker) tesseractWorker = T.createWorker("eng");
   const worker = await tesseractWorker;
   const { data } = await worker.recognize(blob);
@@ -90,6 +92,61 @@ function parseReceiptLine(line) {
 function looksLikeItemLine(line) {
   const lower = line.toLowerCase();
   return !NON_ITEM_WORDS.some((w) => lower.includes(w)) && parseReceiptLine(line).name.length >= 3;
+}
+
+/** Reads a barcode from a photo: the browser's own detector where there is one, otherwise html5-qrcode. */
+async function decodeBarcode(file) {
+  if ("BarcodeDetector" in window) {
+    try {
+      const codes = await new window.BarcodeDetector().detect(await createImageBitmap(file));
+      if (codes.length) return codes[0].rawValue;
+    } catch (e) {
+      // fall back to the library
+    }
+  }
+  const Html5Qrcode = await loadScript(HTML5_QRCODE_URL, "Html5Qrcode", "barcode reader");
+  let host = document.getElementById("shopping-trips-barcode");
+  if (!host) {
+    host = Object.assign(document.createElement("div"), { id: "shopping-trips-barcode" });
+    host.style.display = "none";
+    document.body.appendChild(host);
+  }
+  const scanner = new Html5Qrcode("shopping-trips-barcode");
+  try {
+    return await scanner.scanFile(file, false);
+  } catch (e) {
+    return null;
+  } finally {
+    try {
+      scanner.clear();
+    } catch (e) {
+      // nothing to clear
+    }
+  }
+}
+
+// ── CSV (same format as the Android app's export) ──
+
+/** Quotes a CSV field when it contains a comma, quote or line break. */
+const csvField = (v) => (/[",\r\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+
+/** Parses CSV into records, honouring quoted fields with "" escapes and embedded line breaks. */
+function parseCsv(text) {
+  const records = [];
+  let record = [], field = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { record.push(field); field = ""; }
+    else if (c === "\n") { record.push(field); records.push(record); record = []; field = ""; }
+    else if (c !== "\r") field += c;
+  }
+  if (field || record.length) { record.push(field); records.push(record); }
+  return records;
 }
 
 const words = (s) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2));
@@ -224,8 +281,18 @@ class ShoppingTripsCard extends HTMLElement {
       <div id="editor" class="fullscreen hidden"></div>
       <div id="panel" class="fullscreen hidden"></div>
       <div id="dialog" class="overlay hidden"></div>
-      <input id="tripPhotos" type="file" accept="image/*" multiple hidden>`;
+      <input id="tripPhotos" type="file" accept="image/*" multiple hidden>
+      <input id="onePhoto" class="pick" type="file" accept="image/*" hidden>
+      <input id="onePhotoCam" class="pick" type="file" accept="image/*" capture="environment" hidden>
+      <input id="csvFile" class="pick" type="file" accept=".csv,text/csv,text/plain" hidden>`;
     this._panelEl = this.shadowRoot.getElementById("panel");
+    this.shadowRoot.querySelectorAll("input.pick").forEach((input) =>
+      input.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        e.target.value = "";
+        if (file && this._fileTarget) this._fileTarget(file);
+      })
+    );
     this.shadowRoot.getElementById("tripPhotos").addEventListener("change", (e) => {
       const files = [...e.target.files];
       e.target.value = "";
@@ -291,6 +358,13 @@ class ShoppingTripsCard extends HTMLElement {
       $("tripCamera").addEventListener("click", () => this._pickPhotos((files) => this._addReceiptPhotos(view.id, files)));
       $("addRecord").addEventListener("click", () => this._openEditor({ tripId: view.id, recordId: null, parentId: null }));
       $("tripMenu").addEventListener("click", () => this._tripMenu(view.id));
+    } else if (view.name === "settings") {
+      this._top.innerHTML = `
+        <div class="header">
+          <button id="back" class="icon" title="Back">${icon("arrow-left")}</button>
+          <div class="title">Settings</div>
+        </div>`;
+      $("back").addEventListener("click", () => this._setView({ name: "list" }));
     } else if (view.name === "receipts") {
       this._top.innerHTML = `
         <div class="header">
@@ -310,6 +384,7 @@ class ShoppingTripsCard extends HTMLElement {
     else if (this._view.name === "trips") this._renderTrips();
     else if (this._view.name === "trip") this._renderTrip();
     else if (this._view.name === "receipts") this._renderReceipts();
+    else if (this._view.name === "settings") this._renderSettings();
     if (this._editors.length) this._refreshEditor();
     if (this._viewer) this._refreshViewer();
   }
@@ -491,9 +566,15 @@ class ShoppingTripsCard extends HTMLElement {
         ["new", "New list"],
         ["rename", `Rename “${list?.name ?? ""}”`],
         ["delete", `Delete “${list?.name ?? ""}”`],
+        ["export", "Export list (CSV)"],
+        ["import", "Import list (CSV)"],
+        ["settings", "Settings"],
       ],
     });
-    if (choice === "new") {
+    if (choice === "export" && list) this._exportList(list);
+    else if (choice === "import" && list) this._pickFile("csvFile", (file) => this._importList(list, file));
+    else if (choice === "settings") this._setView({ name: "settings" });
+    else if (choice === "new") {
       const name = await this._dialog({ title: "New List", input: "List name", ok: "Create" });
       if (name) {
         const created = await this._ws("list/create", { name });
@@ -516,6 +597,76 @@ class ShoppingTripsCard extends HTMLElement {
         this._listId = null;
       }
     }
+  }
+
+  // ── Settings, export and import ─────────────────────────────────────────
+
+  _renderSettings() {
+    this._footer.innerHTML = "";
+    const backend = this._data.version || "unknown";
+    const mismatch = backend !== CARD_VERSION;
+    this._body.innerHTML = `
+      <div class="section">ABOUT</div>
+      <div class="srow"><span>Card version</span><span class="sval">${esc(CARD_VERSION)}</span></div>
+      <div class="srow"><span>Integration version</span><span class="sval">${esc(backend)}</span></div>
+      ${
+        mismatch
+          ? `<div class="warn">These versions differ. Restart Home Assistant, then refresh this page
+             (in the Companion app: Settings → Companion app → Debugging → Reset frontend cache).</div>`
+          : ""
+      }`;
+  }
+
+  _pickFile(inputId, callback) {
+    this._fileTarget = callback;
+    this.shadowRoot.getElementById(inputId).click();
+  }
+
+  /** Exports a list as CSV in the Android app's format; uses the share sheet where available. */
+  async _exportList(list) {
+    const items = this._data.items.filter((i) => i.list_id === list.id).sort((a, b) => a.name.localeCompare(b.name));
+    const rows = [
+      csvField(`Shopping List: ${list.name}`),
+      "name,quantity,unit,notes,purchased",
+      ...items.map((i) => [i.name, i.quantity, i.unit || "", i.notes || "", i.is_purchased].map(csvField).join(",")),
+    ];
+    const name = `${list.name.replace(/[\\/:*?"<>|]/g, "_")}.csv`;
+    const file = new File([rows.join("\n") + "\n"], name, { type: "text/csv" });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: `Shopping List: ${list.name}` });
+        return;
+      }
+    } catch (e) {
+      if (e.name === "AbortError") return; // share sheet closed
+    }
+    const url = URL.createObjectURL(file);
+    const a = Object.assign(document.createElement("a"), { href: url, download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  /** Imports a CSV exported by this card or the Android app (a plain name,quantity,unit,notes file works too). */
+  async _importList(list, file) {
+    let records = parseCsv(await file.text()).filter((r) => r.some((f) => f.trim()));
+    if (records[0]?.[0]?.startsWith("Shopping List:")) records = records.slice(1);
+    if (records[0]?.[0]?.trim().toLowerCase() === "name") records = records.slice(1);
+    const items = records
+      .filter((r) => r[0]?.trim())
+      .map((r) => {
+        const row = { name: r[0].trim(), quantity: Math.max(1, parseInt(r[1], 10) || 1) };
+        if (r[2]?.trim()) row.unit = r[2].trim();
+        if (r[3]?.trim()) row.notes = r[3].trim();
+        return row;
+      });
+    if (!items.length) {
+      await this._dialog({ title: "Nothing to import", message: "No items were found in that file.", cancel: null });
+      return;
+    }
+    const result = await this._ws("items/import", { list_id: list.id, items });
+    if (result) await this._dialog({ title: `Imported ${result.count} item${result.count === 1 ? "" : "s"}`, cancel: null });
   }
 
   // ── Item details (the ⓘ button) ─────────────────────────────────────────
@@ -548,7 +699,19 @@ class ShoppingTripsCard extends HTMLElement {
         <button id="idCategory" class="field"></button>
         <button id="idList" class="field"></button>
         ${item.last_unit_price != null ? `<div class="field static">LAST UNIT PRICE: ${esc(money(item.last_unit_price))}</div>` : ""}
+        <div class="barrow">
+          <input id="idBarcode" placeholder="Barcode" inputmode="numeric" value="${esc(item.barcode || "")}" autocomplete="off">
+          <button id="idScan" class="outline">${icon("barcode-scan")} SCAN</button>
+        </div>
         <textarea id="idNotes" class="notes" placeholder="Note" rows="3">${esc(item.notes || "")}</textarea>
+        <div class="section">PHOTO</div>
+        <div class="photorow">
+          <button id="idTake" class="outline">${icon("camera")} TAKE PHOTO</button>
+          <button id="idChoose" class="outline">${icon("image")} CHOOSE PHOTO</button>
+        </div>
+        <div id="idStatus" class="hint status hidden"></div>
+        <img id="idPhoto" class="itemphoto hidden" alt="Item photo">
+        <button id="idRemovePhoto" class="link hidden">Remove photo</button>
       </div>`;
     this._panelEl.classList.remove("hidden");
     const $ = (id) => this.shadowRoot.getElementById(id);
@@ -603,6 +766,61 @@ class ShoppingTripsCard extends HTMLElement {
     $("idDelete").addEventListener("click", async () => {
       if ((await this._ws("item/delete", { item_id: item.id })) !== undefined) this._closePanel();
     });
+
+    // Photo and barcode take effect straight away; the other fields wait for Save
+    const status = (text) => {
+      $("idStatus").textContent = text;
+      $("idStatus").classList.toggle("hidden", !text);
+    };
+    const showPhoto = async (photo) => {
+      const img = $("idPhoto");
+      if (!img) return;
+      img.classList.toggle("hidden", !photo);
+      $("idRemovePhoto").classList.toggle("hidden", !photo);
+      if (photo) img.src = await this._signedUrl(`/api/shopping_trips/item_photo/${photo}`);
+    };
+    showPhoto(item.photo);
+    const uploadPhoto = async (file) => {
+      status("Saving photo…");
+      try {
+        const form = new FormData();
+        form.append("item_id", item.id);
+        form.append("image", await shrinkImage(file, 1600), "photo.jpg");
+        const res = await this._hass.fetchWithAuth("/api/shopping_trips/item_photo", { method: "POST", body: form });
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+        await showPhoto((await res.json()).photo);
+        status("");
+      } catch (err) {
+        status("");
+        await this._dialog({ title: "Couldn't save the photo", message: err.message, cancel: null });
+      }
+    };
+    $("idTake").addEventListener("click", () => this._pickFile("onePhotoCam", uploadPhoto));
+    $("idChoose").addEventListener("click", () => this._pickFile("onePhoto", uploadPhoto));
+    $("idRemovePhoto").addEventListener("click", async () => {
+      if ((await this._ws("item/remove_photo", { item_id: item.id })) !== undefined) showPhoto(null);
+    });
+    $("idScan").addEventListener("click", () =>
+      this._pickFile("onePhotoCam", async (file) => {
+        status("Reading barcode…");
+        let code = null;
+        try {
+          code = await decodeBarcode(file);
+        } catch (err) {
+          status("");
+          await this._dialog({ title: "Couldn't read the barcode", message: err.message, cancel: null });
+          return;
+        }
+        status("");
+        if (code) $("idBarcode").value = code;
+        else
+          await this._dialog({
+            title: "No barcode found",
+            message: "Try again a little closer with the barcode flat and in focus, or type the number in.",
+            cancel: null,
+          });
+      })
+    );
     $("idSave").addEventListener("click", async () => {
       const name = $("idName").value.trim();
       if (!name) {
@@ -617,6 +835,7 @@ class ShoppingTripsCard extends HTMLElement {
         list_id: draft.list_id,
         is_favourite: draft.is_favourite,
         notes: $("idNotes").value.trim(),
+        barcode: $("idBarcode").value.trim() || null,
       });
       if (saved !== undefined) this._closePanel();
     });
@@ -801,14 +1020,18 @@ class ShoppingTripsCard extends HTMLElement {
     return res.json();
   }
 
-  /** A signed URL for a receipt image, so it can be shown in an <img> without a login header. */
-  async _imageUrl(receiptId) {
-    const cached = this._signed[receiptId];
+  /** A signed URL for one of our image endpoints, so it can be shown in an <img> without a login header. */
+  async _signedUrl(path) {
+    const cached = this._signed[path];
     if (cached && cached.exp > Date.now()) return cached.url;
-    const res = await this._hass.callWS({ type: "auth/sign_path", path: `/api/shopping_trips/receipt/${receiptId}`, expires: 3600 });
+    const res = await this._hass.callWS({ type: "auth/sign_path", path, expires: 3600 });
     const url = this._hass.hassUrl(res.path);
-    this._signed[receiptId] = { url, exp: Date.now() + 3500 * 1000 };
+    this._signed[path] = { url, exp: Date.now() + 3500 * 1000 };
     return url;
+  }
+
+  _imageUrl(receiptId) {
+    return this._signedUrl(`/api/shopping_trips/receipt/${receiptId}`);
   }
 
   /** Saves each photo to the trip, then reads its text in the background and saves that too. */
@@ -1658,6 +1881,18 @@ const STYLES = `
     font-size: 14px; font-weight: bold; text-align: center; box-sizing: border-box;
   }
   .field.static { cursor: default; }
+  .barrow { display: flex; gap: 8px; padding: 0 16px 8px; }
+  .barrow input { flex: 1; }
+  .barrow .outline { width: auto; margin: 0; padding: 10px 14px; }
+  .photorow { display: flex; gap: 8px; padding: 0 16px; }
+  .photorow .outline { flex: 1; width: auto; margin: 12px 0; }
+  .itemphoto { display: block; width: calc(100% - 32px); max-height: 60vh; object-fit: contain; margin: 4px 16px; border-radius: 8px; }
+  .srow {
+    display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; font-size: 16px;
+    border-bottom: 1px solid var(--divider-color); color: var(--primary-text-color);
+  }
+  .sval { color: var(--secondary-text-color); }
+  .warn { padding: 14px 20px; color: var(--error-color, #db4437); font-size: 14px; }
   .notes {
     display: block; width: calc(100% - 32px); margin: 8px 16px; padding: 12px; box-sizing: border-box; font: inherit;
     font-size: 16px; border-radius: 8px; border: 1px solid var(--divider-color);
