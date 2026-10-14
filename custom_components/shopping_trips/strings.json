@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Shopping Trips",
+        "description": "Adds your shopping lists as to-do lists and installs the Shopping Trips dashboard card."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Shopping Trips is already set up."
+    }
+  }
+}
