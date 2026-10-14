@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.3.0";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -26,6 +26,75 @@ const dateText = (ms) =>
 const shortDate = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 const icon = (name) => `<ha-icon icon="mdi:${name}"></ha-icon>`;
 
+// ── Receipts: image shrinking, text reading (Tesseract.js in the browser) and line parsing ──
+
+/** Resizes a photo to at most `max` px on its longest side as JPEG; returns the original if it can't be decoded. */
+async function shrinkImage(file, max = 2000) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    return blob || file;
+  } catch (e) {
+    return file;
+  }
+}
+
+const TESSERACT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+let tesseractLoading = null;
+let tesseractWorker = null;
+
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (!tesseractLoading) {
+    tesseractLoading = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = TESSERACT_URL;
+      s.onload = () => resolve(window.Tesseract);
+      s.onerror = () => {
+        tesseractLoading = null;
+        reject(new Error("Couldn't load the text reader. It needs an internet connection the first time."));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return tesseractLoading;
+}
+
+/** Reads the text on a receipt image, line by line (amounts stay on the same line as their items). */
+async function readReceiptText(blob) {
+  const T = await loadTesseract();
+  if (!tesseractWorker) tesseractWorker = T.createWorker("eng");
+  const worker = await tesseractWorker;
+  const { data } = await worker.recognize(blob);
+  return data.text || "";
+}
+
+const PRICE_RE = /\$?\d+\.\d{2}/g;
+const NON_ITEM_WORDS = ["total", "subtotal", "tax", "gst", "change", "cash", "card", "visa", "eftpos", "mastercard",
+  "receipt", "thank", "abn", "rounding", "balance", "tender", "savings"];
+
+/** Splits a receipt line into its description and the last price on it, if any. */
+function parseReceiptLine(line) {
+  const prices = line.match(PRICE_RE);
+  const price = prices ? Number(prices[prices.length - 1].replace("$", "")) : null;
+  const name = line.replace(PRICE_RE, "").replace(/^\d+\s*[xX]\s*/, "").replace(/\s{2,}/g, " ").trim();
+  return { name, price: Number.isFinite(price) ? price : null };
+}
+
+/** True for lines that look like purchased items rather than totals, payment or store details. */
+function looksLikeItemLine(line) {
+  const lower = line.toLowerCase();
+  return !NON_ITEM_WORDS.some((w) => lower.includes(w)) && parseReceiptLine(line).name.length >= 3;
+}
+
+const words = (s) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2));
+const containsAll = (a, b) => [...b].every((w) => a.has(w));
+
 class ShoppingTripsCard extends HTMLElement {
   constructor() {
     super();
@@ -39,6 +108,10 @@ class ShoppingTripsCard extends HTMLElement {
     this._editors = []; // stack of open editors: { tripId, recordId, parentId, override }
     this._unpricedFirst = false;
     this._search = "";
+    this._signed = {}; // receipt id → { url, exp } signed image URLs
+    this._status = ""; // progress line on the trip view while receipts are saved and read
+    this._viewer = null; // open receipt: { receiptId, showText, mapped }
+    this._newTrip = null; // "new trip from receipt" draft
   }
 
   setConfig(config) {
@@ -149,7 +222,15 @@ class ShoppingTripsCard extends HTMLElement {
         <div id="footer"></div>
       </ha-card>
       <div id="editor" class="fullscreen hidden"></div>
-      <div id="dialog" class="overlay hidden"></div>`;
+      <div id="panel" class="fullscreen hidden"></div>
+      <div id="dialog" class="overlay hidden"></div>
+      <input id="tripPhotos" type="file" accept="image/*" multiple hidden>`;
+    this._panelEl = this.shadowRoot.getElementById("panel");
+    this.shadowRoot.getElementById("tripPhotos").addEventListener("change", (e) => {
+      const files = [...e.target.files];
+      e.target.value = "";
+      if (files.length && this._photoTarget) this._photoTarget(files);
+    });
     this._top = this.shadowRoot.getElementById("top");
     this._body = this.shadowRoot.getElementById("body");
     this._footer = this.shadowRoot.getElementById("footer");
@@ -188,9 +269,11 @@ class ShoppingTripsCard extends HTMLElement {
         <div class="header">
           <button id="back" class="icon" title="Back">${icon("arrow-left")}</button>
           <div class="title">Shopping Trips</div>
+          <button id="newFromReceipt" class="icon" title="New trip from receipt photos">${icon("camera")}</button>
         </div>
         <div class="add"><input id="search" placeholder="Search item or store" value="${esc(this._search)}" enterkeyhint="search"></div>`;
       $("back").addEventListener("click", () => this._setView({ name: "list" }));
+      $("newFromReceipt").addEventListener("click", () => this._openNewTrip());
       $("search").addEventListener("input", (e) => {
         this._search = e.target.value;
         this._render();
@@ -200,12 +283,23 @@ class ShoppingTripsCard extends HTMLElement {
         <div class="header">
           <button id="back" class="icon" title="Back">${icon("arrow-left")}</button>
           <div class="title"><div id="tripTitle"></div><div id="tripSub" class="sub"></div></div>
+          <button id="tripCamera" class="icon" title="Add receipt photos">${icon("camera")}</button>
           <button id="addRecord" class="icon" title="Add item">${icon("plus")}</button>
           <button id="tripMenu" class="icon" title="More">${icon("dots-vertical")}</button>
         </div>`;
       $("back").addEventListener("click", () => this._setView({ name: "trips" }));
+      $("tripCamera").addEventListener("click", () => this._pickPhotos((files) => this._addReceiptPhotos(view.id, files)));
       $("addRecord").addEventListener("click", () => this._openEditor({ tripId: view.id, recordId: null, parentId: null }));
       $("tripMenu").addEventListener("click", () => this._tripMenu(view.id));
+    } else if (view.name === "receipts") {
+      this._top.innerHTML = `
+        <div class="header">
+          <button id="back" class="icon" title="Back">${icon("arrow-left")}</button>
+          <div class="title">Receipts</div>
+          <button id="recCamera" class="icon" title="Add receipt photos">${icon("camera")}</button>
+        </div>`;
+      $("back").addEventListener("click", () => this._setView({ name: "trip", id: view.tripId }));
+      $("recCamera").addEventListener("click", () => this._pickPhotos((files) => this._addReceiptPhotos(view.tripId, files)));
     }
     this._render();
   }
@@ -215,7 +309,9 @@ class ShoppingTripsCard extends HTMLElement {
     if (this._view.name === "list") this._renderList();
     else if (this._view.name === "trips") this._renderTrips();
     else if (this._view.name === "trip") this._renderTrip();
+    else if (this._view.name === "receipts") this._renderReceipts();
     if (this._editors.length) this._refreshEditor();
+    if (this._viewer) this._refreshViewer();
   }
 
   // ── Shopping list view ──────────────────────────────────────────────────
@@ -437,8 +533,10 @@ class ShoppingTripsCard extends HTMLElement {
         const s = this._tripSummary(t);
         const title = t.store ? `${dateText(t.finished_at)} · ${t.store}` : dateText(t.finished_at);
         const sub = `${s.count} item${s.count === 1 ? "" : "s"}${s.unpriced ? ` · ${s.unpriced} need price` : ""}`;
+        const hasReceipt = this._data.receipts.some((r) => r.trip_id === t.id);
         return `
           <div class="trip" data-id="${esc(t.id)}">
+            ${hasReceipt ? `<span class="receipt-mark" title="Has receipts">${icon("camera")}</span>` : ""}
             <div class="text"><div class="name strong">${esc(title)}</div><div class="qty">${esc(sub)}</div></div>
             <div class="total">${s.total != null ? esc(money(s.total)) : ""}</div>
           </div>`;
@@ -506,6 +604,7 @@ class ShoppingTripsCard extends HTMLElement {
     let html = `<div class="section">${s.count} ITEM${s.count === 1 ? "" : "S"}${
       s.total != null ? `  ·  TOTAL ${money(s.total)}` : ""
     }${s.unpriced ? `  ·  ${s.unpriced} NEED PRICE` : ""}</div>`;
+    if (this._status) html += `<div class="hint status">${esc(this._status)}</div>`;
     if (!groups.length) html += `<div class="empty">No items in this trip<br>Tap + to add one</div>`;
     else html += `<div class="hint">Tap an item to edit${this._unpricedFirst ? " · Unpriced first" : ""}</div>`;
     html += groups
@@ -527,16 +626,20 @@ class ShoppingTripsCard extends HTMLElement {
   async _tripMenu(tripId) {
     const trip = this._trip(tripId);
     if (!trip) return;
+    const receiptCount = this._data.receipts.filter((r) => r.trip_id === tripId).length;
     const choice = await this._dialog({
       title: "Trip",
       choices: [
+        ["receipts", `Receipts (${receiptCount})`],
         ["unpriced", `${this._unpricedFirst ? "✓ " : ""}Unpriced first`],
         ["date", "Edit date"],
         ["store", "Edit store"],
         ["delete", "Delete trip"],
       ],
     });
-    if (choice === "unpriced") {
+    if (choice === "receipts") {
+      this._setView({ name: "receipts", tripId });
+    } else if (choice === "unpriced") {
       this._unpricedFirst = !this._unpricedFirst;
       this._render();
     } else if (choice === "date") {
@@ -560,6 +663,497 @@ class ShoppingTripsCard extends HTMLElement {
       });
       if (ok && (await this._ws("trip/delete", { trip_id: trip.id })) !== undefined) this._setView({ name: "trips" });
     }
+  }
+
+  // ── Receipts ────────────────────────────────────────────────────────────
+
+  /** Opens the photo picker (on phones it offers the camera or the gallery); several photos can be chosen. */
+  _pickPhotos(callback) {
+    this._photoTarget = callback;
+    this.shadowRoot.getElementById("tripPhotos").click();
+  }
+
+  _setStatus(text) {
+    this._status = text;
+    this._render();
+  }
+
+  async _uploadReceipt(tripId, blob, text = "") {
+    const form = new FormData();
+    form.append("trip_id", tripId);
+    form.append("text", text);
+    form.append("image", blob, "receipt.jpg");
+    const res = await this._hass.fetchWithAuth("/api/shopping_trips/receipt", { method: "POST", body: form });
+    if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+    return res.json();
+  }
+
+  /** A signed URL for a receipt image, so it can be shown in an <img> without a login header. */
+  async _imageUrl(receiptId) {
+    const cached = this._signed[receiptId];
+    if (cached && cached.exp > Date.now()) return cached.url;
+    const res = await this._hass.callWS({ type: "auth/sign_path", path: `/api/shopping_trips/receipt/${receiptId}`, expires: 3600 });
+    const url = this._hass.hassUrl(res.path);
+    this._signed[receiptId] = { url, exp: Date.now() + 3500 * 1000 };
+    return url;
+  }
+
+  /** Saves each photo to the trip, then reads its text in the background and saves that too. */
+  async _addReceiptPhotos(tripId, files) {
+    for (const [i, file] of files.entries()) {
+      const n = files.length > 1 ? ` ${i + 1} of ${files.length}` : "";
+      this._setStatus(`Saving receipt${n}…`);
+      const blob = await shrinkImage(file);
+      let receipt;
+      try {
+        receipt = await this._uploadReceipt(tripId, blob);
+      } catch (err) {
+        this._setStatus("");
+        await this._dialog({ title: "Couldn't save the receipt", message: err.message, cancel: null });
+        return;
+      }
+      this._setStatus(`Reading receipt${n}…`);
+      try {
+        const text = await readReceiptText(blob);
+        if (text.trim()) await this._ws("receipt/set_text", { receipt_id: receipt.id, text });
+      } catch (err) {
+        // The text can still be read later from the receipt viewer
+      }
+    }
+    this._setStatus("");
+  }
+
+  _renderReceipts() {
+    const tripId = this._view.tripId;
+    if (!this._trip(tripId)) {
+      this._setView({ name: "trips" });
+      return;
+    }
+    this._footer.innerHTML = "";
+    const receipts = this._data.receipts.filter((r) => r.trip_id === tripId).sort((a, b) => b.scanned_at - a.scanned_at);
+    let html = this._status ? `<div class="hint status">${esc(this._status)}</div>` : "";
+    if (!receipts.length) html += `<div class="empty">No receipts for this trip yet.<br>Tap the camera to add photos.</div>`;
+    html += receipts
+      .map(
+        (r) => `
+        <div class="rcard" data-id="${esc(r.id)}">
+          <div class="section rhead">
+            <span>SCANNED ${esc(dateText(r.scanned_at).toUpperCase())}</span>
+            <button class="icon light" data-del="${esc(r.id)}" title="Delete receipt">${icon("delete")}</button>
+          </div>
+          <img class="rimg" data-img="${esc(r.id)}" alt="Receipt">
+        </div>`
+      )
+      .join("");
+    this._body.innerHTML = html;
+    this._body.querySelectorAll("img.rimg").forEach((img) => {
+      img.addEventListener("error", () => img.replaceWith(Object.assign(document.createElement("div"), {
+        className: "empty", textContent: "Image no longer available",
+      })));
+      this._imageUrl(img.dataset.img).then((url) => (img.src = url)).catch(() => img.dispatchEvent(new Event("error")));
+    });
+    this._body.querySelectorAll(".rcard").forEach((card) =>
+      card.addEventListener("click", (e) => {
+        const del = e.target.closest("[data-del]");
+        if (del) this._ws("receipt/delete", { receipt_id: del.dataset.del });
+        else this._openViewer(card.dataset.id);
+      })
+    );
+  }
+
+  // ── Receipt viewer: zoomable image, and its text with lines mapped to trip items ──
+
+  _openViewer(receiptId) {
+    this._viewer = { receiptId, showText: false, mapped: {} };
+    this._panelEl.innerHTML = `
+      <div class="ed-top">
+        <button id="vBack" class="icon" title="Back">${icon("arrow-left")}</button>
+        <div class="title">Receipt</div>
+        <button id="vToggle" class="primary">TEXT</button>
+      </div>
+      <div id="vImageWrap" class="zoom">
+        <img id="vImg" draggable="false" alt="Receipt">
+        <div id="vImgMsg" class="empty hidden">Image no longer available</div>
+      </div>
+      <div id="vText" class="ed-body hidden">
+        <div class="hint">Tap a line with a price to choose its trip item</div>
+        <button id="vFill" class="outline">Fill prices automatically</button>
+        <div id="vStatus" class="empty hidden"></div>
+        <div id="vLines"></div>
+      </div>`;
+    this._panelEl.classList.remove("hidden");
+    const $ = (id) => this.shadowRoot.getElementById(id);
+    $("vBack").addEventListener("click", () => this._closePanel());
+    $("vToggle").addEventListener("click", () => this._toggleViewerText());
+    $("vFill").addEventListener("click", () => this._fillPrices());
+    const img = $("vImg");
+    img.addEventListener("error", () => {
+      img.classList.add("hidden");
+      $("vImgMsg").classList.remove("hidden");
+    });
+    this._imageUrl(receiptId).then((url) => (img.src = url)).catch(() => img.dispatchEvent(new Event("error")));
+    this._wireZoom($("vImageWrap"), img);
+  }
+
+  _closePanel() {
+    if (this._newTrip) this._newTrip.photos.forEach((p) => URL.revokeObjectURL(p.url));
+    this._viewer = null;
+    this._newTrip = null;
+    this._panelEl.classList.add("hidden");
+    this._panelEl.innerHTML = "";
+  }
+
+  _toggleViewerText() {
+    const v = this._viewer;
+    v.showText = !v.showText;
+    const $ = (id) => this.shadowRoot.getElementById(id);
+    $("vToggle").textContent = v.showText ? "IMAGE" : "TEXT";
+    $("vImageWrap").classList.toggle("hidden", v.showText);
+    $("vText").classList.toggle("hidden", !v.showText);
+    if (v.showText) this._ensureReceiptText();
+  }
+
+  /** Shows the receipt's text, reading it from the image first if it hasn't been read yet. */
+  async _ensureReceiptText() {
+    const v = this._viewer;
+    const receipt = this._data.receipts.find((r) => r.id === v.receiptId);
+    if (!receipt) return;
+    if (receipt.text.trim()) {
+      this._renderViewerLines();
+      return;
+    }
+    if (v.reading) return;
+    v.reading = true;
+    const status = this.shadowRoot.getElementById("vStatus");
+    status.textContent = "Reading text…";
+    status.classList.remove("hidden");
+    try {
+      const blob = await (await fetch(await this._imageUrl(receipt.id))).blob();
+      const text = await readReceiptText(blob);
+      if (!text.trim()) throw new Error("No text could be read from this image.");
+      await this._ws("receipt/set_text", { receipt_id: receipt.id, text });
+      status.classList.add("hidden");
+    } catch (err) {
+      status.textContent = err.message || String(err);
+    } finally {
+      v.reading = false;
+    }
+  }
+
+  _refreshViewer() {
+    const v = this._viewer;
+    if (!v) return;
+    if (!this._data.receipts.some((r) => r.id === v.receiptId)) {
+      this._closePanel();
+      return;
+    }
+    if (v.showText) this._renderViewerLines();
+  }
+
+  _viewerLines() {
+    const receipt = this._data.receipts.find((r) => r.id === this._viewer.receiptId);
+    return (receipt?.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  }
+
+  _renderViewerLines() {
+    const v = this._viewer;
+    const lines = this._viewerLines();
+    const box = this.shadowRoot.getElementById("vLines");
+    if (!box) return;
+    box.innerHTML = lines
+      .map((line, i) => {
+        const { price } = parseReceiptLine(line);
+        return `
+          <div class="lrow${price != null ? " tap" : ""}" data-i="${i}">
+            <div class="lline"><span class="ltext">${esc(line)}</span>${price != null ? `<span class="lprice">${esc(money(price))}</span>` : ""}</div>
+            ${v.mapped[i] ? `<div class="lmapped">→ ${esc(v.mapped[i])}</div>` : ""}
+          </div>`;
+      })
+      .join("");
+    box.querySelectorAll(".lrow.tap").forEach((row) =>
+      row.addEventListener("click", () => this._mapLine(Number(row.dataset.i)))
+    );
+  }
+
+  /** Puts a line's amount on a trip item the user picks: the line is the item's total, unit price = total ÷ quantity. */
+  async _mapLine(index) {
+    const v = this._viewer;
+    const line = this._viewerLines()[index];
+    const { price } = parseReceiptLine(line);
+    const receipt = this._data.receipts.find((r) => r.id === v.receiptId);
+    if (price == null || !receipt) return;
+    const records = this._leaves(this._data.records.filter((r) => r.trip_id === receipt.trip_id));
+    if (!records.length) {
+      await this._dialog({ title: "No items yet", message: "Add items to this trip first.", cancel: null });
+      return;
+    }
+    const choice = await this._dialog({
+      title: `${money(price)} → which item?`,
+      choices: records.map((r) => [r.id, r.total != null ? `${r.name} (${money(r.total)})` : r.name]),
+    });
+    const record = choice && this._record(choice);
+    if (!record) return;
+    const saved = await this._ws("record/save", this._pricedParams(record, price));
+    if (saved) {
+      v.mapped[index] = record.name;
+      this._renderViewerLines();
+    }
+  }
+
+  _pricedParams(record, lineTotal) {
+    const params = {
+      trip_id: record.trip_id,
+      record_id: record.id,
+      name: record.name,
+      quantity: record.quantity,
+      unit_price: record.quantity > 0 ? lineTotal / record.quantity : lineTotal,
+    };
+    if (record.parent_id) params.parent_id = record.parent_id;
+    return params;
+  }
+
+  /** Matches priced lines to unpriced items whose name words all appear on the line (or the other way round). */
+  async _fillPrices() {
+    const v = this._viewer;
+    const receipt = this._data.receipts.find((r) => r.id === v.receiptId);
+    if (!receipt) return;
+    if (!receipt.text.trim()) {
+      await this._dialog({ title: "No text yet", message: "Wait for the receipt text to be read.", cancel: null });
+      return;
+    }
+    const pool = this._leaves(this._data.records.filter((r) => r.trip_id === receipt.trip_id)).filter(
+      (r) => r.unit_price == null && !r.total_override
+    );
+    let filled = 0;
+    const lines = this._viewerLines();
+    for (const [i, line] of lines.entries()) {
+      const { price } = parseReceiptLine(line);
+      if (price == null || !looksLikeItemLine(line)) continue;
+      const lw = words(line);
+      const match = pool.find((r) => {
+        const iw = words(r.name);
+        return iw.size > 0 && (containsAll(lw, iw) || containsAll(iw, lw));
+      });
+      if (!match) continue;
+      if (await this._ws("record/save", this._pricedParams(match, price))) {
+        pool.splice(pool.indexOf(match), 1);
+        v.mapped[i] = match.name;
+        filled++;
+      }
+    }
+    this._renderViewerLines();
+    await this._dialog({
+      title: `Filled ${filled} price${filled === 1 ? "" : "s"}`,
+      message: filled ? "" : "No unpriced items matched the receipt lines. Tap a line to choose its item.",
+      cancel: null,
+    });
+  }
+
+  /** Pinch to zoom, drag to pan when zoomed, double-tap to zoom in 3× or back to fit. */
+  _wireZoom(container, img) {
+    let s = 1, x = 0, y = 0;
+    const pts = new Map();
+    let startDist = 0, startScale = 1, lastTap = 0, moved = false;
+    const clamp = () => {
+      s = Math.min(8, Math.max(1, s));
+      const mx = (container.clientWidth * (s - 1)) / 2;
+      const my = (container.clientHeight * (s - 1)) / 2;
+      x = Math.min(mx, Math.max(-mx, x));
+      y = Math.min(my, Math.max(-my, y));
+    };
+    const apply = () => {
+      clamp();
+      img.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
+    };
+    const dist = () => {
+      const [a, b] = [...pts.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    container.addEventListener("pointerdown", (e) => {
+      container.setPointerCapture(e.pointerId);
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      moved = false;
+      if (pts.size === 2) {
+        startDist = dist();
+        startScale = s;
+      }
+    });
+    container.addEventListener("pointermove", (e) => {
+      const prev = pts.get(e.pointerId);
+      if (!prev) return;
+      const cur = { x: e.clientX, y: e.clientY };
+      if (Math.hypot(cur.x - prev.x, cur.y - prev.y) > 2) moved = true;
+      pts.set(e.pointerId, cur);
+      if (pts.size === 2 && startDist > 0) {
+        s = (startScale * dist()) / startDist;
+        apply();
+      } else if (pts.size === 1 && s > 1) {
+        x += cur.x - prev.x;
+        y += cur.y - prev.y;
+        apply();
+      }
+    });
+    const up = (e) => {
+      const wasSingle = pts.size === 1;
+      pts.delete(e.pointerId);
+      if (pts.size < 2) startDist = 0;
+      if (!wasSingle || moved) return;
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        if (s > 1.05) {
+          s = 1;
+          x = 0;
+          y = 0;
+        } else {
+          // Zoom in around the tapped point
+          const rect = container.getBoundingClientRect();
+          const cx = e.clientX - rect.left - rect.width / 2;
+          const cy = e.clientY - rect.top - rect.height / 2;
+          s = 3;
+          x = -cx * (s - 1);
+          y = -cy * (s - 1);
+        }
+        apply();
+        lastTap = 0;
+      } else lastTap = now;
+    };
+    container.addEventListener("pointerup", up);
+    container.addEventListener("pointercancel", (e) => pts.delete(e.pointerId));
+  }
+
+  // ── New trip from receipt photos ────────────────────────────────────────
+
+  _openNewTrip() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    this._newTrip = { photos: [], lines: [], reading: 0 };
+    this._panelEl.innerHTML = `
+      <div class="ed-top">
+        <button id="ntBack" class="icon" title="Back without creating">${icon("arrow-left")}</button>
+        <div class="title">New Trip from Receipt</div>
+        <button id="ntCreate" class="primary">Create</button>
+      </div>
+      <div class="ed-body">
+        <input id="ntStore" class="big" placeholder="Store (optional)" autocomplete="off">
+        <div class="ed-row"><label>Date<input id="ntDate" type="date" value="${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}"></label></div>
+        <button id="ntAdd" class="outline">${icon("camera")} ADD RECEIPT PHOTOS</button>
+        <div id="ntThumbs" class="thumbs"></div>
+        <div class="section">ITEMS (TICK THE ONES TO INCLUDE)</div>
+        <div id="ntStatus" class="hint"></div>
+        <div id="ntLines"></div>
+      </div>`;
+    this._panelEl.classList.remove("hidden");
+    const $ = (id) => this.shadowRoot.getElementById(id);
+    $("ntBack").addEventListener("click", () => this._closePanel());
+    $("ntAdd").addEventListener("click", () => this._pickPhotos((files) => this._addNewTripPhotos(files)));
+    $("ntCreate").addEventListener("click", () => this._createTripFromReceipt());
+    this._renderNewTrip();
+  }
+
+  _renderNewTrip() {
+    const nt = this._newTrip;
+    const $ = (id) => this.shadowRoot.getElementById(id);
+    if (!nt || !$("ntThumbs")) return;
+    $("ntThumbs").innerHTML = nt.photos
+      .map((p, i) => `<img class="thumb" src="${esc(p.url)}" data-i="${i}" alt="Receipt photo (tap to remove)">`)
+      .join("");
+    $("ntThumbs").querySelectorAll(".thumb").forEach((t) => t.addEventListener("click", () => this._removeNewTripPhoto(Number(t.dataset.i))));
+    $("ntStatus").textContent = nt.reading
+      ? "Reading text…"
+      : !nt.photos.length
+      ? "Add one or more photos of the receipt"
+      : !nt.lines.length
+      ? "No items detected"
+      : "Tap a line to tick or untick it";
+    $("ntLines").innerHTML = nt.lines
+      .map(
+        (l, i) => `
+        <div class="nrow${l.include ? " on" : ""}" data-i="${i}">
+          <span class="tick">${l.include ? icon("checkbox-marked") : icon("checkbox-blank-outline")}</span>
+          <span class="ltext">${esc(l.name)}</span>
+          ${l.price != null ? `<span class="lprice">${esc(money(l.price))}</span>` : ""}
+        </div>`
+      )
+      .join("");
+    $("ntLines").querySelectorAll(".nrow").forEach((row) =>
+      row.addEventListener("click", () => {
+        const line = nt.lines[Number(row.dataset.i)];
+        line.include = !line.include;
+        this._renderNewTrip();
+      })
+    );
+  }
+
+  /** Adds photos and reads each one; lines with a price that look like items are ticked. */
+  async _addNewTripPhotos(files) {
+    const nt = this._newTrip;
+    for (const file of files) {
+      const blob = await shrinkImage(file);
+      const photo = { blob, url: URL.createObjectURL(blob), text: null };
+      nt.photos.push(photo);
+      nt.reading++;
+      this._renderNewTrip();
+      try {
+        photo.text = await readReceiptText(blob);
+      } catch (err) {
+        photo.text = "";
+        await this._dialog({ title: "Couldn't read the receipt", message: err.message || String(err), cancel: null });
+      }
+      nt.reading--;
+      if (this._newTrip !== nt || !nt.photos.includes(photo)) return;
+      for (const raw of photo.text.split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        const { name, price } = parseReceiptLine(line);
+        if (name) nt.lines.push({ photo, name, price, include: price != null && looksLikeItemLine(line) });
+      }
+      this._renderNewTrip();
+    }
+  }
+
+  async _removeNewTripPhoto(index) {
+    const nt = this._newTrip;
+    const photo = nt.photos[index];
+    const ok = await this._dialog({ title: "Remove this photo?", message: "Its detected items are removed too.", ok: "Remove" });
+    if (!ok || this._newTrip !== nt) return;
+    nt.photos.splice(nt.photos.indexOf(photo), 1);
+    nt.lines = nt.lines.filter((l) => l.photo !== photo);
+    URL.revokeObjectURL(photo.url);
+    this._renderNewTrip();
+  }
+
+  async _createTripFromReceipt() {
+    const nt = this._newTrip;
+    const $ = (id) => this.shadowRoot.getElementById(id);
+    if (!nt.photos.length) {
+      await this._dialog({ title: "Add a receipt photo first", cancel: null });
+      return;
+    }
+    if (nt.reading) {
+      await this._dialog({ title: "Still reading the receipt…", cancel: null });
+      return;
+    }
+    const when = new Date();
+    const [y, m, d] = ($("ntDate").value || "").split("-").map(Number);
+    if (y && m && d) when.setFullYear(y, m - 1, d);
+    const trip = await this._ws("trip/create", {
+      store: $("ntStore").value.trim(),
+      finished_at: when.getTime(),
+      list_id: this._listId,
+      items: nt.lines.filter((l) => l.include).map((l) => (l.price != null ? { name: l.name, price: l.price } : { name: l.name })),
+    });
+    if (!trip) return;
+    $("ntCreate").disabled = true;
+    $("ntStatus").textContent = "Saving receipt photos…";
+    for (const photo of nt.photos) {
+      try {
+        await this._uploadReceipt(trip.id, photo.blob, photo.text || "");
+      } catch (err) {
+        await this._dialog({ title: "A receipt photo couldn't be saved", message: err.message, cancel: null });
+      }
+    }
+    this._closePanel();
+    this._setView({ name: "trip", id: trip.id });
   }
 
   // ── Full-screen item editor ─────────────────────────────────────────────
@@ -907,6 +1501,31 @@ const STYLES = `
   }
   .dbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   .dbuttons .link { width: auto; padding: 10px 12px; }
+  .status { color: ${GREEN}; font-weight: 600; }
+  .receipt-mark { color: ${GREEN}; display: inline-flex; }
+  .icon.light { color: #fff; padding: 2px; }
+  .rcard { border-bottom: 1px solid var(--divider-color); cursor: pointer; }
+  .rhead { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 4px 16px; }
+  .rimg { display: block; width: 100%; height: auto; }
+  .zoom {
+    flex: 1; position: relative; overflow: hidden; background: #000; touch-action: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .zoom img { width: 100%; height: 100%; object-fit: contain; transform-origin: center center; user-select: none; -webkit-user-drag: none; }
+  .zoom .empty { color: #ccc; }
+  .lrow { padding: 10px 16px; border-bottom: 1px solid var(--divider-color); }
+  .lrow.tap { cursor: pointer; }
+  .lline { display: flex; gap: 12px; align-items: baseline; }
+  .ltext { flex: 1; min-width: 0; font-family: monospace; font-size: 14px; color: var(--primary-text-color); overflow-wrap: anywhere; }
+  .lprice { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
+  .lmapped { margin-top: 4px; font-size: 13px; color: ${GREEN}; }
+  .outline { display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .thumbs { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 12px; }
+  .thumb { width: 96px; height: 128px; object-fit: cover; border-radius: 6px; flex: none; cursor: pointer; background: var(--secondary-background-color); }
+  .nrow { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--divider-color); cursor: pointer; }
+  .nrow .tick { color: var(--secondary-text-color); display: inline-flex; }
+  .nrow.on .tick { color: ${GREEN}; }
+  .nrow:not(.on) .ltext, .nrow:not(.on) .lprice { opacity: .5; }
 `;
 
 if (!customElements.get("shopping-trips-card")) {

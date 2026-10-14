@@ -12,6 +12,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN, STATE_BOUGHT, STATE_PENDING, STATE_SKIPPED
+from .receipt_views import remove_files
 from .store import NotFound, ShoppingStore
 
 
@@ -51,6 +52,9 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_trip_delete,
         ws_record_save,
         ws_record_delete,
+        ws_trip_create,
+        ws_receipt_set_text,
+        ws_receipt_delete,
     ):
         websocket_api.async_register_command(hass, command)
 
@@ -206,7 +210,8 @@ def ws_trip_update(hass, connection, msg) -> None:
 @callback
 @_handles_errors
 def ws_trip_delete(hass, connection, msg) -> None:
-    _store(hass).delete_trip(msg["trip_id"])
+    files = _store(hass).delete_trip(msg["trip_id"])
+    hass.async_add_executor_job(remove_files, hass, files)
     connection.send_result(msg["id"])
 
 
@@ -242,4 +247,44 @@ def ws_record_save(hass, connection, msg) -> None:
 @_handles_errors
 def ws_record_delete(hass, connection, msg) -> None:
     _store(hass).delete_record(msg["record_id"])
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/trip/create",
+        vol.Optional("store", default=""): str,
+        vol.Required("finished_at"): vol.Coerce(int),
+        vol.Optional("list_id"): vol.Any(None, str),
+        vol.Required("items"): [
+            {vol.Required("name"): vol.All(str, vol.Length(min=1)), vol.Optional("price"): _MONEY}
+        ],
+    }
+)
+@callback
+@_handles_errors
+def ws_trip_create(hass, connection, msg) -> None:
+    trip = _store(hass).create_trip(msg["store"], msg["finished_at"], msg["items"], msg.get("list_id"))
+    connection.send_result(msg["id"], trip)
+
+
+# ── Receipts ───────────────────────────────────────────────────────────────
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/receipt/set_text", vol.Required("receipt_id"): str, vol.Required("text"): str}
+)
+@callback
+@_handles_errors
+def ws_receipt_set_text(hass, connection, msg) -> None:
+    _store(hass).set_receipt_text(msg["receipt_id"], msg["text"])
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/receipt/delete", vol.Required("receipt_id"): str})
+@callback
+@_handles_errors
+def ws_receipt_delete(hass, connection, msg) -> None:
+    file = _store(hass).delete_receipt(msg["receipt_id"])
+    hass.async_add_executor_job(remove_files, hass, [file])
     connection.send_result(msg["id"])

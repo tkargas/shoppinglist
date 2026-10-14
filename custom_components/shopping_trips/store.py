@@ -51,6 +51,9 @@ class ShoppingStore:
                 "records": [],
                 "receipts": [],
             }
+        # Data saved by older versions may lack newer sections
+        for key in ("items", "trips", "records", "receipts"):
+            data.setdefault(key, [])
         self.data = data
 
     # ── Change notification ────────────────────────────────────────────────
@@ -81,6 +84,7 @@ class ShoppingStore:
             "items": self.data["items"],
             "trips": self.data["trips"],
             "records": self.data["records"],
+            "receipts": self.data["receipts"],
         }
 
     def _refresh_last_prices(self) -> None:
@@ -281,11 +285,59 @@ class ShoppingStore:
         self._changed()
 
     @callback
-    def delete_trip(self, trip_id: str) -> None:
+    def delete_trip(self, trip_id: str) -> list[str]:
+        """Deletes a trip with its items and receipts; returns the receipt image files to remove."""
         self.get_trip(trip_id)
+        files = [r["file"] for r in self.data["receipts"] if r["trip_id"] == trip_id]
         self.data["trips"] = [t for t in self.data["trips"] if t["id"] != trip_id]
         self.data["records"] = [r for r in self.data["records"] if r["trip_id"] != trip_id]
+        self.data["receipts"] = [r for r in self.data["receipts"] if r["trip_id"] != trip_id]
         self._changed()
+        return files
+
+    @callback
+    def create_trip(self, store: str, finished_at: int, items: list[dict[str, Any]], list_id: str | None = None) -> dict[str, Any]:
+        """Creates a trip directly (e.g. from receipt photos). Each item is a {name, price} line bought once;
+        items are linked to the main list by name, and added there crossed off when missing."""
+        lst = next((l for l in self.lists if l["id"] == list_id), None) or self.lists[0]
+        trip = {"id": _new_id(), "list_id": lst["id"], "list_name": lst["name"], "store": store.strip(), "finished_at": finished_at}
+        self.data["trips"].append(trip)
+        for line in items:
+            record = self._new_record(trip["id"], None, None, line["name"], 1.0, line.get("price"), None)
+            record["item_id"] = self._link_item(trip, record["name"], create=True)
+            self.data["records"].append(record)
+        self._changed()
+        return trip
+
+    # ── Receipts ───────────────────────────────────────────────────────────
+
+    def get_receipt(self, receipt_id: str) -> dict[str, Any]:
+        for receipt in self.data["receipts"]:
+            if receipt["id"] == receipt_id:
+                return receipt
+        raise NotFound(receipt_id)
+
+    @callback
+    def add_receipt(self, trip_id: str, file: str, text: str = "") -> dict[str, Any]:
+        """Links an already-saved image file to a trip."""
+        self.get_trip(trip_id)
+        receipt = {"id": _new_id(), "trip_id": trip_id, "file": file, "text": text, "scanned_at": _now()}
+        self.data["receipts"].append(receipt)
+        self._changed()
+        return receipt
+
+    @callback
+    def set_receipt_text(self, receipt_id: str, text: str) -> None:
+        self.get_receipt(receipt_id)["text"] = text
+        self._changed()
+
+    @callback
+    def delete_receipt(self, receipt_id: str) -> str:
+        """Removes a receipt; returns its image file to delete."""
+        receipt = self.get_receipt(receipt_id)
+        self.data["receipts"] = [r for r in self.data["receipts"] if r["id"] != receipt_id]
+        self._changed()
+        return receipt["file"]
 
     # ── Trip items (records) ───────────────────────────────────────────────
 

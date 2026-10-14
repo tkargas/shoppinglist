@@ -10,7 +10,7 @@ automations. The **Shopping Trips card** gives the full app experience on a dash
 |---|---|---|
 | 1 | Lists, items, swipe to cross off (bought / not bought), to-do entities, dashboard card | ✅ Done |
 | 2 | Finish Shopping, trips, trip items and sub-items, unit price × quantity, total override, last price | ✅ Done |
-| 3 | Receipts: camera, several photos, full-screen zoom, text reading, mapping lines to items, new trip from receipt | Planned |
+| 3 | Receipts: camera, several photos, full-screen zoom, text reading, mapping lines to items, new trip from receipt | ✅ Done |
 | 4 | Item details (category, favourite, photo, barcode), CSV import/export, settings | Planned |
 
 ## Install
@@ -46,6 +46,16 @@ list: Shopping List   # optional: which list to open first
 - In a trip, tap an item to edit it full screen: quantity (decimals allowed), unit price, total
   (calculated, or tap it to type your own), sub-items, and the last price paid. ⋮ has Unpriced first,
   Edit date, Edit store and Delete trip.
+- **Receipts:** the camera button on a trip adds receipt photos (take new ones or pick several from the
+  gallery); their text is read automatically. Trip ⋮ → **Receipts** lists them. Tap one to view it full
+  screen (pinch to zoom, drag, double-tap), and **TEXT** to see its lines: tap a priced line to choose the
+  trip item it belongs to, or **Fill prices automatically**.
+- **New trip from receipt:** the camera button on Shopping Trips builds a trip from receipt photos — tick
+  the detected items, set the store and date, and Create.
+
+Receipt text is read in the browser with [Tesseract.js](https://tesseract.projectnaptha.com/), which is
+downloaded from the internet the first time it's used. Receipt images are stored in
+`config/shopping_trips/receipts/` and are only served to logged-in users.
 
 After updating the integration, refresh the browser (or the Companion app) so the new card version loads.
 
