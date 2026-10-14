@@ -2,7 +2,7 @@
  * Shopping Trips card for Home Assistant.
  * Plain web component (no build step). Talks to the shopping_trips integration over the websocket API.
  */
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.1.1";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
