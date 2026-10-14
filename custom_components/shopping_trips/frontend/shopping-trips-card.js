@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.3.1";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -372,6 +372,7 @@ class ShoppingTripsCard extends HTMLElement {
             ${qty ? `<div class="qty">${esc(qty)}</div>` : ""}
           </div>
           ${price ? `<div class="price">${esc(price)}</div>` : ""}
+          <button class="info" title="Item details">${icon("information-outline")}</button>
         </div>
       </div>`;
   }
@@ -383,6 +384,14 @@ class ShoppingTripsCard extends HTMLElement {
     const lbl = wrap.querySelector(".lbl");
     const canSwipe = !item.is_purchased;
     let startX = 0, startY = 0, dx = 0, tracking = false, swiping = false, suppressClick = false;
+
+    // The info button opens item details and must not count as a tap or swipe on the row
+    const info = wrap.querySelector(".info");
+    info.addEventListener("pointerdown", (e) => e.stopPropagation());
+    info.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._openItemDetail(item.id);
+    });
 
     const reset = (animate) => {
       row.style.transition = animate ? "transform .15s ease-out" : "";
@@ -507,6 +516,110 @@ class ShoppingTripsCard extends HTMLElement {
         this._listId = null;
       }
     }
+  }
+
+  // ── Item details (the ⓘ button) ─────────────────────────────────────────
+
+  /** Full-screen details for a shopping list item; changes are kept until Save. */
+  _openItemDetail(itemId) {
+    const item = this._data.items.find((i) => i.id === itemId);
+    if (!item) return;
+    const draft = {
+      quantity: item.quantity || 1,
+      category: item.category || "",
+      list_id: item.list_id,
+      is_favourite: !!item.is_favourite,
+    };
+    this._panelEl.innerHTML = `
+      <div class="ed-top">
+        <button id="idBack" class="icon" title="Back without saving">${icon("arrow-left")}</button>
+        <div class="title">Item</div>
+        <button id="idDelete" class="icon" title="Delete item">${icon("delete")}</button>
+        <button id="idSave" class="primary">Save</button>
+      </div>
+      <div class="ed-body">
+        <input id="idName" class="big" placeholder="Item name" value="${esc(item.name)}" autocomplete="off">
+        <div class="qtyrow">
+          <button id="idFewer" class="outline">− FEWER</button>
+          <div id="idQty" class="qtyval"></div>
+          <button id="idMore" class="outline">+ MORE</button>
+          <button id="idFav" class="icon fav" title="Favourite"></button>
+        </div>
+        <button id="idCategory" class="field"></button>
+        <button id="idList" class="field"></button>
+        ${item.last_unit_price != null ? `<div class="field static">LAST UNIT PRICE: ${esc(money(item.last_unit_price))}</div>` : ""}
+        <textarea id="idNotes" class="notes" placeholder="Note" rows="3">${esc(item.notes || "")}</textarea>
+      </div>`;
+    this._panelEl.classList.remove("hidden");
+    const $ = (id) => this.shadowRoot.getElementById(id);
+
+    const show = () => {
+      $("idQty").textContent = `Quantity: ${draft.quantity}`;
+      $("idFewer").disabled = draft.quantity <= 1;
+      $("idFav").innerHTML = icon(draft.is_favourite ? "star" : "star-outline");
+      $("idFav").classList.toggle("on", draft.is_favourite);
+      $("idCategory").textContent = `CATEGORY: ${(draft.category || "Uncategorized").toUpperCase()}`;
+      const list = this._data.lists.find((l) => l.id === draft.list_id);
+      $("idList").textContent = `LIST: ${(list?.name || "").toUpperCase()}`;
+    };
+    show();
+
+    $("idBack").addEventListener("click", () => this._closePanel());
+    $("idFewer").addEventListener("click", () => {
+      if (draft.quantity > 1) draft.quantity--;
+      show();
+    });
+    $("idMore").addEventListener("click", () => {
+      draft.quantity++;
+      show();
+    });
+    $("idFav").addEventListener("click", () => {
+      draft.is_favourite = !draft.is_favourite;
+      show();
+    });
+    $("idCategory").addEventListener("click", async () => {
+      const categories = [...new Set(this._data.items.map((i) => i.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const choice = await this._dialog({
+        title: "Category",
+        choices: [["none", "Uncategorized"], ...categories.map((c) => [`c:${c}`, c]), ["new", "New category…"]],
+      });
+      if (choice === null) return;
+      if (choice === "new") {
+        const name = await this._dialog({ title: "New Category", input: "Category name", ok: "OK" });
+        if (name) draft.category = name;
+      } else draft.category = choice.startsWith("c:") ? choice.slice(2) : "";
+      show();
+    });
+    $("idList").addEventListener("click", async () => {
+      const choice = await this._dialog({
+        title: "Move to list",
+        choices: this._data.lists.map((l) => [l.id, `${l.id === draft.list_id ? "✓ " : ""}${l.name}`]),
+      });
+      if (choice) {
+        draft.list_id = choice;
+        show();
+      }
+    });
+    $("idDelete").addEventListener("click", async () => {
+      if ((await this._ws("item/delete", { item_id: item.id })) !== undefined) this._closePanel();
+    });
+    $("idSave").addEventListener("click", async () => {
+      const name = $("idName").value.trim();
+      if (!name) {
+        $("idName").focus();
+        return;
+      }
+      const saved = await this._ws("item/update", {
+        item_id: item.id,
+        name,
+        quantity: draft.quantity,
+        category: draft.category,
+        list_id: draft.list_id,
+        is_favourite: draft.is_favourite,
+        notes: $("idNotes").value.trim(),
+      });
+      if (saved !== undefined) this._closePanel();
+    });
   }
 
   // ── Trip history view ───────────────────────────────────────────────────
@@ -1526,6 +1639,30 @@ const STYLES = `
   .nrow .tick { color: var(--secondary-text-color); display: inline-flex; }
   .nrow.on .tick { color: ${GREEN}; }
   .nrow:not(.on) .ltext, .nrow:not(.on) .lprice { opacity: .5; }
+  .row { padding-right: 4px; }
+  .info {
+    flex: none; align-self: stretch; display: inline-flex; align-items: center; justify-content: center; width: 48px;
+    margin: -10px 0; background: none; border: none; border-left: 1px solid var(--divider-color);
+    color: var(--secondary-text-color);
+  }
+  .row.crossed .info { opacity: .45; }
+  .qtyrow { display: flex; align-items: center; gap: 8px; padding: 0 16px 12px; }
+  .qtyrow .outline { width: auto; flex: 1; margin: 0; }
+  .qtyrow .outline:disabled { opacity: .4; }
+  .qtyval { flex: 1; text-align: center; font-size: 15px; color: var(--primary-text-color); }
+  .fav { color: var(--secondary-text-color); --mdc-icon-size: 28px; }
+  .fav.on { color: #FFC107; }
+  .field {
+    display: block; width: calc(100% - 32px); margin: 0 16px 8px; padding: 15px; border: none; border-radius: 8px;
+    background: var(--secondary-background-color, rgba(127,127,127,.15)); color: var(--primary-text-color);
+    font-size: 14px; font-weight: bold; text-align: center; box-sizing: border-box;
+  }
+  .field.static { cursor: default; }
+  .notes {
+    display: block; width: calc(100% - 32px); margin: 8px 16px; padding: 12px; box-sizing: border-box; font: inherit;
+    font-size: 16px; border-radius: 8px; border: 1px solid var(--divider-color);
+    background: var(--secondary-background-color, transparent); color: var(--primary-text-color); resize: vertical;
+  }
 `;
 
 if (!customElements.get("shopping-trips-card")) {

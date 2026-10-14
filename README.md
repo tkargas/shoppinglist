@@ -39,6 +39,7 @@ list: Shopping List   # optional: which list to open first
 - **Swipe right** (or tap): crossed off as **bought** — it goes into the current trip.
 - **Swipe left**: crossed off as **not bought** — left out of the trip.
 - Tap a crossed-off item to put it back on the list.
+- ⓘ on a row opens the item: name, quantity (− FEWER / + MORE), favourite, category, list, note, last unit price, delete.
 - Add items by typing, or pick an existing item from the suggestions.
 - ⋮ next to the list name: new, rename or delete lists.
 - **Finish Shopping** saves the bought items as a trip; they stay crossed off on the list.
