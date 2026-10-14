@@ -9,7 +9,7 @@ automations. The **Shopping Trips card** gives the full app experience on a dash
 | Phase | Features | State |
 |---|---|---|
 | 1 | Lists, items, swipe to cross off (bought / not bought), to-do entities, dashboard card | ✅ Done |
-| 2 | Finish Shopping, trips, trip items and sub-items, unit price × quantity, total override, last price | Planned |
+| 2 | Finish Shopping, trips, trip items and sub-items, unit price × quantity, total override, last price | ✅ Done |
 | 3 | Receipts: camera, several photos, full-screen zoom, text reading, mapping lines to items, new trip from receipt | Planned |
 | 4 | Item details (category, favourite, photo, barcode), CSV import/export, settings | Planned |
 
@@ -41,6 +41,11 @@ list: Shopping List   # optional: which list to open first
 - Tap a crossed-off item to put it back on the list.
 - Add items by typing, or pick an existing item from the suggestions.
 - ⋮ next to the list name: new, rename or delete lists.
+- **Finish Shopping** saves the bought items as a trip; they stay crossed off on the list.
+- The history button opens **Shopping Trips**: search by item or store, tap a trip to see its items.
+- In a trip, tap an item to edit it full screen: quantity (decimals allowed), unit price, total
+  (calculated, or tap it to type your own), sub-items, and the last price paid. ⋮ has Unpriced first,
+  Edit date, Edit store and Delete trip.
 
 After updating the integration, refresh the browser (or the Companion app) so the new card version loads.
 

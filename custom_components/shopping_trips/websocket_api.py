@@ -46,6 +46,11 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_item_set_state,
         ws_item_delete,
         ws_items_delete_crossed,
+        ws_finish,
+        ws_trip_update,
+        ws_trip_delete,
+        ws_record_save,
+        ws_record_delete,
     ):
         websocket_api.async_register_command(hass, command)
 
@@ -165,4 +170,76 @@ def ws_item_delete(hass, connection, msg) -> None:
 @_handles_errors
 def ws_items_delete_crossed(hass, connection, msg) -> None:
     _store(hass).delete_crossed(msg["list_id"])
+    connection.send_result(msg["id"])
+
+
+# ── Trips ──────────────────────────────────────────────────────────────────
+
+_MONEY = vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0)))
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/finish", vol.Required("list_id"): str, vol.Optional("store", default=""): str}
+)
+@callback
+@_handles_errors
+def ws_finish(hass, connection, msg) -> None:
+    connection.send_result(msg["id"], _store(hass).finish_shopping(msg["list_id"], msg["store"]))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/trip/update",
+        vol.Required("trip_id"): str,
+        vol.Optional("store"): str,
+        vol.Optional("finished_at"): vol.Coerce(int),
+    }
+)
+@callback
+@_handles_errors
+def ws_trip_update(hass, connection, msg) -> None:
+    _store(hass).update_trip(msg["trip_id"], store=msg.get("store"), finished_at=msg.get("finished_at"))
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/trip/delete", vol.Required("trip_id"): str})
+@callback
+@_handles_errors
+def ws_trip_delete(hass, connection, msg) -> None:
+    _store(hass).delete_trip(msg["trip_id"])
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/record/save",
+        vol.Required("trip_id"): str,
+        vol.Optional("record_id"): vol.Any(None, str),
+        vol.Optional("parent_id"): vol.Any(None, str),
+        vol.Required("name"): vol.All(str, vol.Length(min=1)),
+        vol.Required("quantity"): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+        vol.Optional("unit_price"): _MONEY,
+        vol.Optional("total"): _MONEY,
+    }
+)
+@callback
+@_handles_errors
+def ws_record_save(hass, connection, msg) -> None:
+    record = _store(hass).save_record(
+        msg["trip_id"],
+        msg["name"],
+        msg["quantity"],
+        msg.get("unit_price"),
+        msg.get("total"),
+        record_id=msg.get("record_id"),
+        parent_id=msg.get("parent_id"),
+    )
+    connection.send_result(msg["id"], record)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/record/delete", vol.Required("record_id"): str})
+@callback
+@_handles_errors
+def ws_record_delete(hass, connection, msg) -> None:
+    _store(hass).delete_record(msg["record_id"])
     connection.send_result(msg["id"])
