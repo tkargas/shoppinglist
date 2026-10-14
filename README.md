@@ -81,3 +81,13 @@ data:
 ## Data
 
 Everything is stored in HA's `.storage/shopping_trips` file and is included in HA backups.
+
+## Moving from the Android app
+
+1. In the Android app (version 29 or later): **Settings → Export everything**, and save the `.zip`
+   somewhere you can reach from your phone or computer (Downloads, Google Drive, …).
+2. In the card: ⋮ → **Settings → Import from Android backup**, and pick that `.zip`.
+
+Lists and items are matched by name, so nothing already in Home Assistant is duplicated or changed. Trips
+keep their dates, stores, prices, sub-items and total overrides; receipts keep their text and scan dates.
+Photos are resized and uploaded one by one. The same backup can only be imported once.

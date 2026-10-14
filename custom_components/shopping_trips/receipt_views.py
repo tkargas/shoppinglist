@@ -70,6 +70,7 @@ class ReceiptUploadView(HomeAssistantView):
         trip_id = form.get("trip_id")
         image = form.get("image")
         text = form.get("text") or ""
+        scanned = form.get("scanned_at")
         if not isinstance(trip_id, str) or not isinstance(image, web.FileField):
             return self.json_message("trip_id and image are required", HTTPStatus.BAD_REQUEST)
         try:
@@ -80,7 +81,8 @@ class ReceiptUploadView(HomeAssistantView):
         name = await _save_upload(hass, receipts_dir(hass), image)
         if name is None:
             return self.json_message("Image too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-        receipt = store.add_receipt(trip_id, name, str(text))
+        scanned_at = int(scanned) if isinstance(scanned, str) and scanned.isdigit() else None
+        receipt = store.add_receipt(trip_id, name, str(text), scanned_at)
         return self.json(receipt)
 
 
@@ -152,3 +154,27 @@ class ItemPhotoView(HomeAssistantView):
         if not await hass.async_add_executor_job(path.is_file):
             return web.Response(status=HTTPStatus.NOT_FOUND)
         return web.FileResponse(path, headers={"Cache-Control": "private, max-age=604800"})
+
+
+class AndroidImportView(HomeAssistantView):
+    """POST /api/shopping_trips/import_android: backup.json from the Android app (images are uploaded separately)."""
+
+    url = f"/api/{DOMAIN}/import_android"
+    name = f"api:{DOMAIN}:import_android"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass: HomeAssistant = request.app[KEY_HASS]
+        store: ShoppingStore | None = hass.data.get(DOMAIN)
+        if store is None:
+            return self.json_message("Shopping Trips isn't set up", HTTPStatus.SERVICE_UNAVAILABLE)
+        try:
+            backup = await request.json()
+        except ValueError:
+            return self.json_message("That file isn't valid JSON", HTTPStatus.BAD_REQUEST)
+        if not isinstance(backup, dict):
+            return self.json_message("That file isn't a Shopping List backup", HTTPStatus.BAD_REQUEST)
+        try:
+            return self.json(store.import_android(backup))
+        except ValueError as err:
+            return self.json_message(str(err), HTTPStatus.CONFLICT)

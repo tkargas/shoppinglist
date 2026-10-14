@@ -11,7 +11,13 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .const import CARD_URL, DOMAIN, VERSION
-from .receipt_views import ItemPhotoUploadView, ItemPhotoView, ReceiptImageView, ReceiptUploadView
+from .receipt_views import (
+    AndroidImportView,
+    ItemPhotoUploadView,
+    ItemPhotoView,
+    ReceiptImageView,
+    ReceiptUploadView,
+)
 from .store import ShoppingStore
 from .websocket_api import async_register_commands
 
@@ -32,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(ReceiptImageView())
         hass.http.register_view(ItemPhotoUploadView())
         hass.http.register_view(ItemPhotoView())
+        hass.http.register_view(AndroidImportView())
         card = Path(__file__).parent / "frontend" / "shopping-trips-card.js"
         await hass.http.async_register_static_paths(
             [StaticPathConfig(CARD_URL, str(card), cache_headers=False)]

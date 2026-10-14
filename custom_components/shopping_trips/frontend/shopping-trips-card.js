@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.5.0";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -45,7 +45,8 @@ async function shrinkImage(file, max = 2000) {
 }
 
 const TESSERACT_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-const HTML5_QRCODE_URL = "https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
+const JSZIP_URL = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
+const HTML5_QRCODE_URL ="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
 const scriptLoads = {};
 let tesseractWorker = null;
 
@@ -284,7 +285,8 @@ class ShoppingTripsCard extends HTMLElement {
       <input id="tripPhotos" type="file" accept="image/*" multiple hidden>
       <input id="onePhoto" class="pick" type="file" accept="image/*" hidden>
       <input id="onePhotoCam" class="pick" type="file" accept="image/*" capture="environment" hidden>
-      <input id="csvFile" class="pick" type="file" accept=".csv,text/csv,text/plain" hidden>`;
+      <input id="csvFile" class="pick" type="file" accept=".csv,text/csv,text/plain" hidden>
+      <input id="zipFile" class="pick" type="file" accept=".zip,application/zip" hidden>`;
     this._panelEl = this.shadowRoot.getElementById("panel");
     this.shadowRoot.querySelectorAll("input.pick").forEach((input) =>
       input.addEventListener("change", (e) => {
@@ -614,7 +616,95 @@ class ShoppingTripsCard extends HTMLElement {
           ? `<div class="warn">These versions differ. Restart Home Assistant, then refresh this page
              (in the Companion app: Settings → Companion app → Debugging → Reset frontend cache).</div>`
           : ""
-      }`;
+      }
+      <div class="section">DATA</div>
+      <button id="importAndroid" class="srow tapr"${this._importing ? " disabled" : ""}>
+        <span>Import from Android backup<br><span class="sval small">The .zip from the Android app's Settings → Export everything</span></span>
+        ${icon("upload")}
+      </button>
+      ${this._importStatus ? `<div class="hint status">${esc(this._importStatus)}</div>` : ""}`;
+    const btn = this.shadowRoot.getElementById("importAndroid");
+    btn.addEventListener("click", () => {
+      if (!this._importing) this._pickFile("zipFile", (file) => this._importAndroid(file));
+    });
+  }
+
+  _setImportStatus(text) {
+    this._importStatus = text;
+    if (this._view.name === "settings") this._render();
+  }
+
+  /**
+   * Imports the Android app's "Export everything" zip: the data goes up first, then each receipt and item photo
+   * is shrunk and uploaded on its own, so no single upload is too big for Home Assistant.
+   */
+  async _importAndroid(file) {
+    this._importing = true;
+    try {
+      this._setImportStatus("Opening backup…");
+      const JSZip = await loadScript(JSZIP_URL, "JSZip", "backup reader");
+      const zip = await JSZip.loadAsync(file);
+      const json = zip.file("backup.json");
+      if (!json) throw new Error("That zip isn't a Shopping List backup (no backup.json inside).");
+      const backup = JSON.parse(await json.async("string"));
+
+      this._setImportStatus("Importing lists, items and trips…");
+      const res = await this._hass.fetchWithAuth("/api/shopping_trips/import_android", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(backup),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.message || `Import failed (${res.status})`);
+
+      const receipts = (backup.receipts || []).filter((r) => r.file && result.trips[r.trip_id] && zip.file(r.file));
+      const photos = (backup.items || []).filter((i) => i.photo && result.items[i.id] && zip.file(i.photo));
+      let failed = 0;
+      for (const [n, r] of receipts.entries()) {
+        this._setImportStatus(`Uploading receipt ${n + 1} of ${receipts.length}…`);
+        try {
+          const form = new FormData();
+          form.append("trip_id", result.trips[r.trip_id]);
+          form.append("text", r.text || "");
+          if (r.scanned_at) form.append("scanned_at", String(r.scanned_at));
+          form.append("image", await shrinkImage(await zip.file(r.file).async("blob")), "receipt.jpg");
+          const up = await this._hass.fetchWithAuth("/api/shopping_trips/receipt", { method: "POST", body: form });
+          if (!up.ok) failed++;
+        } catch (e) {
+          failed++;
+        }
+      }
+      for (const [n, i] of photos.entries()) {
+        this._setImportStatus(`Uploading item photo ${n + 1} of ${photos.length}…`);
+        try {
+          const form = new FormData();
+          form.append("item_id", result.items[i.id]);
+          form.append("image", await shrinkImage(await zip.file(i.photo).async("blob"), 1600), "photo.jpg");
+          const up = await this._hass.fetchWithAuth("/api/shopping_trips/item_photo", { method: "POST", body: form });
+          if (!up.ok) failed++;
+        } catch (e) {
+          failed++;
+        }
+      }
+
+      const c = result.counts;
+      this._setImportStatus("");
+      await this._dialog({
+        title: "Import finished",
+        message:
+          `Added ${c.items} items (in ${c.lists} lists), ${c.trips} trips with ${c.trip_items} trip items, ` +
+          `${receipts.length + c.text_only_receipts} receipts and ${photos.length} item photos.` +
+          (failed ? ` ${failed} image${failed === 1 ? "" : "s"} couldn't be uploaded.` : "") +
+          " Items already in Home Assistant were kept as they were.",
+        cancel: null,
+      });
+    } catch (err) {
+      this._setImportStatus("");
+      await this._dialog({ title: "Import failed", message: err.message || String(err), cancel: null });
+    } finally {
+      this._importing = false;
+      if (this._view.name === "settings") this._render();
+    }
   }
 
   _pickFile(inputId, callback) {
@@ -1892,6 +1982,9 @@ const STYLES = `
     border-bottom: 1px solid var(--divider-color); color: var(--primary-text-color);
   }
   .sval { color: var(--secondary-text-color); }
+  .sval.small { font-size: 13px; }
+  .tapr { width: 100%; background: none; border: none; border-bottom: 1px solid var(--divider-color); text-align: left; align-items: center; }
+  .tapr:disabled { opacity: .5; }
   .warn { padding: 14px 20px; color: var(--error-color, #db4437); font-size: 14px; }
   .notes {
     display: block; width: calc(100% - 32px); margin: 8px 16px; padding: 12px; box-sizing: border-box; font: inherit;

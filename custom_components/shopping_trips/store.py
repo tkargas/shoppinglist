@@ -357,10 +357,10 @@ class ShoppingStore:
         raise NotFound(receipt_id)
 
     @callback
-    def add_receipt(self, trip_id: str, file: str, text: str = "") -> dict[str, Any]:
+    def add_receipt(self, trip_id: str, file: str, text: str = "", scanned_at: int | None = None) -> dict[str, Any]:
         """Links an already-saved image file to a trip."""
         self.get_trip(trip_id)
-        receipt = {"id": _new_id(), "trip_id": trip_id, "file": file, "text": text, "scanned_at": _now()}
+        receipt = {"id": _new_id(), "trip_id": trip_id, "file": file, "text": text, "scanned_at": scanned_at or _now()}
         self.data["receipts"].append(receipt)
         self._changed()
         return receipt
@@ -466,3 +466,125 @@ class ShoppingStore:
             r for r in self.data["records"] if r["id"] != record_id and r.get("parent_id") != record_id
         ]
         self._changed()
+
+    # ── Migration from the Android app ─────────────────────────────────────
+
+    @callback
+    def import_android(self, backup: dict[str, Any]) -> dict[str, Any]:
+        """Adds an Android app backup (backup.json from "Export everything") to the existing data.
+
+        Lists and items are matched by name, so nothing is duplicated; trips, their items and sub-items are added
+        as they were. Receipts without an image are added here with their text; receipts with an image are added
+        when the card uploads each image. Returns id maps for those uploads, and counts.
+        """
+        if backup.get("format") != "shoppinglist-android-backup":
+            raise ValueError("That file isn't a Shopping List backup from the Android app")
+        stamp = backup.get("exported_at")
+        imported = self.data.setdefault("imports", [])
+        if stamp in imported:
+            raise ValueError("This backup has already been imported")
+
+        def as_float(v: Any) -> float | None:
+            return float(v) if v is not None else None
+
+        list_map: dict[str, str] = {}
+        for lst in backup.get("lists", []):
+            name = str(lst.get("name") or "").strip() or "Shopping List"
+            existing = next((l for l in self.lists if l["name"].lower() == name.lower()), None)
+            if existing is None:
+                existing = {"id": _new_id(), "name": name, "created_at": lst.get("created_at") or _now()}
+                self.lists.append(existing)
+            list_map[str(lst["id"])] = existing["id"]
+        first_list = self.lists[0]["id"]
+
+        new_items: dict[str, str] = {}
+        for i in backup.get("items", []):
+            name = str(i.get("name") or "").strip()
+            if not name:
+                continue
+            list_id = list_map.get(str(i.get("list_id")), first_list)
+            if self.find_by_name(list_id, name) is not None:
+                continue  # already in Home Assistant: keep that one
+            item = {
+                "id": _new_id(),
+                "list_id": list_id,
+                "name": name,
+                "quantity": max(1, int(i.get("quantity") or 1)),
+                "unit": i.get("unit") or "",
+                "category": i.get("category") or "",
+                "notes": i.get("notes") or "",
+                "is_purchased": bool(i.get("is_purchased")),
+                "is_skipped": bool(i.get("is_skipped")),
+                "in_trip": bool(i.get("in_trip", True)),
+                "is_favourite": bool(i.get("is_favourite")),
+                "photo": None,
+                "barcode": i.get("barcode") or None,
+                "last_unit_price": None,
+                "added_at": i.get("added_at") or _now(),
+                "purchased_at": i.get("purchased_at"),
+            }
+            self.data["items"].append(item)
+            new_items[str(i["id"])] = item["id"]
+
+        trip_map: dict[str, str] = {}
+        for t in backup.get("trips", []):
+            list_id = list_map.get(str(t.get("list_id")), first_list)
+            trip = {
+                "id": _new_id(),
+                "list_id": list_id,
+                "list_name": next(l["name"] for l in self.lists if l["id"] == list_id),
+                "store": t.get("store") or "",
+                "finished_at": t.get("finished_at") or _now(),
+            }
+            self.data["trips"].append(trip)
+            trip_map[str(t["id"])] = trip["id"]
+
+        # Items before their sub-items, so parents are known
+        records = sorted(backup.get("records", []), key=lambda r: r.get("parent_id") is not None)
+        record_map: dict[str, str] = {}
+        for r in records:
+            trip_id = trip_map.get(str(r.get("trip_id")))
+            name = str(r.get("name") or "").strip()
+            if trip_id is None or not name:
+                continue
+            parent_id = record_map.get(str(r["parent_id"])) if r.get("parent_id") is not None else None
+            trip = self.get_trip(trip_id)
+            linked = self.find_by_name(trip["list_id"], name)
+            record = {
+                "id": _new_id(),
+                "trip_id": trip_id,
+                "parent_id": parent_id,
+                "item_id": linked["id"] if linked else None,
+                "name": name,
+                "quantity": as_float(r.get("quantity")) or 1.0,
+                "unit_price": as_float(r.get("unit_price")),
+                "total": as_float(r.get("total")),
+                "total_override": bool(r.get("total_override")),
+                "purchased_at": r.get("purchased_at") or trip["finished_at"],
+            }
+            self.data["records"].append(record)
+            record_map[str(r["id"])] = record["id"]
+
+        text_only = 0
+        for rc in backup.get("receipts", []):
+            trip_id = trip_map.get(str(rc.get("trip_id")))
+            if trip_id and not rc.get("file") and (rc.get("text") or "").strip():
+                self.data["receipts"].append({
+                    "id": _new_id(), "trip_id": trip_id, "file": "", "text": rc["text"],
+                    "scanned_at": rc.get("scanned_at") or _now(),
+                })
+                text_only += 1
+
+        imported.append(stamp)
+        self._changed()
+        return {
+            "trips": trip_map,
+            "items": new_items,
+            "counts": {
+                "lists": len(set(list_map.values())),
+                "items": len(new_items),
+                "trips": len(trip_map),
+                "trip_items": len(record_map),
+                "text_only_receipts": text_only,
+            },
+        }
