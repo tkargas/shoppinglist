@@ -1,0 +1,29 @@
+# Creates a GitHub release for every pushed version tag (e.g. v0.1.2), so HACS shows version numbers.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches manifest.json
+        run: |
+          manifest=$(python3 -c "import json; print(json.load(open('custom_components/shopping_trips/manifest.json'))['version'])")
+          if [ "v$manifest" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} doesn't match manifest version $manifest"
+            exit 1
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
