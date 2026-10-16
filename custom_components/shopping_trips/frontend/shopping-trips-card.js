@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.0";
+const CARD_VERSION = "0.6.1";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -789,6 +789,13 @@ class ShoppingTripsCard extends HTMLElement {
         <button id="idCategory" class="field"></button>
         <button id="idList" class="field"></button>
         ${item.last_unit_price != null ? `<div class="field static">LAST UNIT PRICE: ${esc(money(item.last_unit_price))}</div>` : ""}
+        ${(() => {
+          // Newest trip with an item of this name (case-insensitive)
+          const name = item.name.toLowerCase();
+          const tripIds = new Set(this._data.records.filter((r) => r.name.toLowerCase() === name).map((r) => r.trip_id));
+          const last = Math.max(...this._data.trips.filter((t) => tripIds.has(t.id)).map((t) => t.finished_at));
+          return Number.isFinite(last) ? `<div class="field static">LAST PURCHASED: ${esc(shortDate(last).toUpperCase())}</div>` : "";
+        })()}
         <div class="barrow">
           <input id="idBarcode" placeholder="Barcode" inputmode="numeric" value="${esc(item.barcode || "")}" autocomplete="off">
           <button id="idScan" class="outline">${icon("barcode-scan")} SCAN</button>
