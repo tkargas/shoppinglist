@@ -228,6 +228,7 @@ def ws_trip_delete(hass, connection, msg) -> None:
         vol.Required("quantity"): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
         vol.Optional("unit_price"): _MONEY,
         vol.Optional("total"): _MONEY,
+        vol.Optional("notes"): str,
     }
 )
 @callback
@@ -241,6 +242,7 @@ def ws_record_save(hass, connection, msg) -> None:
         msg.get("total"),
         record_id=msg.get("record_id"),
         parent_id=msg.get("parent_id"),
+        notes=msg.get("notes"),
     )
     connection.send_result(msg["id"], record)
 

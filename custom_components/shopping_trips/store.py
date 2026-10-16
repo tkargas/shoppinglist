@@ -451,6 +451,7 @@ class ShoppingStore:
             "total": None,
             "total_override": False,
             "purchased_at": trip["finished_at"],
+            "notes": "",
         }
         self._price(record, quantity, unit_price, total)
         return record
@@ -490,8 +491,10 @@ class ShoppingStore:
         total: float | None,
         record_id: str | None = None,
         parent_id: str | None = None,
+        notes: str | None = None,
     ) -> dict[str, Any]:
-        """Adds or edits a trip item or sub-item. [total] is only given when typed in by hand."""
+        """Adds or edits a trip item or sub-item. [total] is only given when typed in by hand;
+        [notes] is left as it is when not given."""
         trip = self.get_trip(trip_id)
         name = name.strip()
         if record_id:
@@ -503,6 +506,8 @@ class ShoppingStore:
                 self.get_record(parent_id)
             record = self._new_record(trip_id, parent_id, None, name, quantity, unit_price, total)
             self.data["records"].append(record)
+        if notes is not None:
+            record["notes"] = notes.strip()
         record["item_id"] = self._link_item(trip, name, create=record["parent_id"] is None)
         self._changed()
         return record
@@ -610,6 +615,7 @@ class ShoppingStore:
                 "total": as_float(r.get("total")),
                 "total_override": bool(r.get("total_override")),
                 "purchased_at": r.get("purchased_at") or trip["finished_at"],
+                "notes": r.get("notes") or "",
             }
             self.data["records"].append(record)
             record_map[str(r["id"])] = record["id"]
@@ -716,6 +722,7 @@ class ShoppingStore:
                 total=float(e["total"]) if e.get("total") is not None else None,
                 total_override=bool(e.get("total_override")),
                 purchased_at=e.get("purchased_at") or trips_by[e["trip_id"]]["finished_at"],
+                notes=e["notes"] if "notes" in e else record.get("notes", ""),
             )
 
         receipts_by = {r["id"]: r for r in self.data["receipts"]}

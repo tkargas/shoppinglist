@@ -48,7 +48,7 @@ list: Shopping List   # optional: which list to open first
 - **Finish Shopping** saves the bought items as a trip; they stay crossed off on the list.
 - The history button opens **Shopping Trips**: search by item or store, tap a trip to see its items.
 - In a trip, tap an item to edit it full screen: quantity (decimals allowed), unit price, total
-  (calculated, or tap it to type your own), sub-items, and the last price paid. ⋮ has Unpriced first,
+  (calculated, or tap it to type your own), a note, sub-items, and the last price paid. ⋮ has Unpriced first,
   Edit date, Edit store and Delete trip.
 - **Receipts:** the camera button on a trip adds receipt photos (take new ones or pick several from the
   gallery); their text is read automatically. Trip ⋮ → **Receipts** lists them. Tap one to view it full

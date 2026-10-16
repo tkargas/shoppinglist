@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.1";
+const CARD_VERSION = "0.6.2";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -1633,6 +1633,7 @@ class ShoppingTripsCard extends HTMLElement {
         <input id="edTotalInput" class="ed-total-input hidden" inputmode="decimal" placeholder="Total"
           value="${r?.total_override && r.total != null ? r.total.toFixed(2) : ""}">
         <div id="edLastPaid" class="muted"></div>
+        <textarea id="edNotes" class="notes" placeholder="Note" rows="2">${esc(r?.notes ?? "")}</textarea>
         ${
           isSub
             ? ""
@@ -1756,6 +1757,7 @@ class ShoppingTripsCard extends HTMLElement {
       name,
       quantity: parseNum($("edQty").value) || 1,
       unit_price: hasKids ? existing?.unit_price ?? null : parseNum($("edUnit").value),
+      notes: $("edNotes").value.trim(),
     };
     // A typed-in total wins over the calculated one; clearing the box goes back to calculating
     const typed = ed.override && !hasKids ? parseNum($("edTotalInput").value) : null;
