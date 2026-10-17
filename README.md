@@ -39,7 +39,7 @@ list: Shopping List   # optional: which list to open first
 - **Swipe right** (or tap): crossed off as **bought** — it goes into the current trip.
 - **Swipe left**: crossed off as **not bought** — left out of the trip.
 - Tap a crossed-off item to put it back on the list.
-- ⓘ on a row opens the item: name, quantity (− FEWER / + MORE), favourite, category, list, last purchased date, barcode (type it or
+- ⓘ on a row opens the item: name, quantity (− FEWER / + MORE), favourite, category, list, last purchased date, purchase history (date and unit price), barcode (type it or
   SCAN a photo of it), note, photo (take or choose), last unit price, delete.
 - ⋮ next to the list name also has **Export list (CSV)**, **Import list (CSV)** (same format as the Android
   app) and **Settings**, which shows the card and integration versions.

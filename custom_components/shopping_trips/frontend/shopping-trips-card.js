@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.2";
+const CARD_VERSION = "0.6.3";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -794,7 +794,10 @@ class ShoppingTripsCard extends HTMLElement {
           const name = item.name.toLowerCase();
           const tripIds = new Set(this._data.records.filter((r) => r.name.toLowerCase() === name).map((r) => r.trip_id));
           const last = Math.max(...this._data.trips.filter((t) => tripIds.has(t.id)).map((t) => t.finished_at));
-          return Number.isFinite(last) ? `<div class="field static">LAST PURCHASED: ${esc(shortDate(last).toUpperCase())}</div>` : "";
+          return Number.isFinite(last)
+            ? `<div class="field static">LAST PURCHASED: ${esc(shortDate(last).toUpperCase())}</div>
+               <button id="idHistory" class="field">PURCHASE HISTORY</button>`
+            : "";
         })()}
         <div class="barrow">
           <input id="idBarcode" placeholder="Barcode" inputmode="numeric" value="${esc(item.barcode || "")}" autocomplete="off">
@@ -825,6 +828,17 @@ class ShoppingTripsCard extends HTMLElement {
     show();
 
     $("idBack").addEventListener("click", () => this._closePanel());
+    $("idHistory")?.addEventListener("click", () => {
+      // Every purchase of an item with this name, newest trip first: date and unit price
+      const name = item.name.toLowerCase();
+      const rows = this._data.records
+        .filter((r) => r.name.toLowerCase() === name)
+        .map((r) => ({ r, trip: this._trip(r.trip_id) }))
+        .filter((x) => x.trip)
+        .sort((a, b) => b.trip.finished_at - a.trip.finished_at)
+        .map(({ r, trip }) => [dateText(trip.finished_at), r.unit_price != null ? money(r.unit_price) : "—"]);
+      this._dialog({ title: `${item.name}: purchase history`, rows, cancel: null, ok: "Close" });
+    });
     $("idFewer").addEventListener("click", () => {
       if (draft.quantity > 1) draft.quantity--;
       show();
@@ -1776,7 +1790,7 @@ class ShoppingTripsCard extends HTMLElement {
    * A small modal inside the card. Resolves to: the typed text (input), the chosen key (choices),
    * true (ok) — or null when cancelled. With optional, an empty input is accepted.
    */
-  _dialog({ title, message, input, inputType = "text", value = "", optional = false, choices, ok = "OK", cancel = "Cancel" }) {
+  _dialog({ title, message, input, inputType = "text", value = "", optional = false, choices, rows, ok = "OK", cancel = "Cancel" }) {
     const overlay = this.shadowRoot.getElementById("dialog");
     return new Promise((resolve) => {
       overlay.innerHTML = `
@@ -1785,6 +1799,15 @@ class ShoppingTripsCard extends HTMLElement {
           ${message ? `<div class="dmsg">${esc(message)}</div>` : ""}
           ${input ? `<input class="dinput" type="${esc(inputType)}" placeholder="${esc(input)}" value="${esc(value)}" enterkeyhint="done">` : ""}
           ${choices ? choices.map(([k, label]) => `<button class="choice" data-k="${esc(k)}">${esc(label)}</button>`).join("") : ""}
+          ${
+            rows
+              ? `<div class="drows">${
+                  rows.length
+                    ? rows.map(([left, right]) => `<div class="drow"><span>${esc(left)}</span><span class="dval">${esc(right)}</span></div>`).join("")
+                    : `<div class="dmsg">No purchases yet</div>`
+                }</div>`
+              : ""
+          }
           <div class="dbuttons">
             ${cancel ? `<button class="link" data-act="cancel">${esc(cancel)}</button>` : ""}
             ${choices ? "" : `<button class="primary" data-act="ok">${esc(ok)}</button>`}
@@ -1935,6 +1958,9 @@ const STYLES = `
     color: var(--primary-text-color); padding: 14px 4px; font-size: 16px;
   }
   .dbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  .drows { max-height: 60vh; overflow-y: auto; margin-bottom: 8px; }
+  .drow { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); font-size: 15px; }
+  .dval { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
   .dbuttons .link { width: auto; padding: 10px 12px; }
   .status { color: ${GREEN}; font-weight: 600; }
   .receipt-mark { color: ${GREEN}; display: inline-flex; }
