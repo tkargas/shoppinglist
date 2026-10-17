@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.4";
+const CARD_VERSION = "0.6.5";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -957,7 +957,9 @@ class ShoppingTripsCard extends HTMLElement {
         <button id="ihBack" class="icon" title="Back">${icon("arrow-left")}</button>
         <div class="title">${esc(itemName)}<div class="sub">Purchase history</div></div>
       </div>
-      <div class="section hrow"><span>DATE</span><span>UNIT PRICE</span></div>
+      <div class="section hrow">
+        <span class="hdate">DATE</span><span class="hqty">QTY</span><span class="hamt">UNIT</span><span class="hamt">TOTAL</span>
+      </div>
       <div class="ed-body flush">
         ${
           rows.length
@@ -965,8 +967,10 @@ class ShoppingTripsCard extends HTMLElement {
                 .map(
                   ({ r, trip }) => `
               <div class="hrow line">
-                <span>${esc(dateText(trip.finished_at))}</span>
-                <span class="${r.unit_price != null ? "hprice" : "hnone"}">${r.unit_price != null ? esc(money(r.unit_price)) : "—"}</span>
+                <span class="hdate">${esc(shortDate(trip.finished_at))}</span>
+                <span class="hqty">${esc(qtyText(r.quantity))}</span>
+                <span class="hamt${r.unit_price != null ? "" : " hnone"}">${r.unit_price != null ? esc(money(r.unit_price)) : "—"}</span>
+                <span class="hamt${r.total != null ? " hprice" : " hnone"}">${r.total != null ? esc(money(r.total)) : "—"}</span>
               </div>`
                 )
                 .join("")
@@ -1989,6 +1993,10 @@ const STYLES = `
   .hrow { display: flex; justify-content: space-between; gap: 16px; padding: 9px 16px 9px 20px; }
   .hrow.line { min-height: 52px; box-sizing: border-box; align-items: center; border-bottom: 1px solid var(--divider-color); font-size: 16px; color: var(--primary-text-color); }
   .hprice { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
+  .hrow { gap: 8px; }
+  .hdate { flex: 1; min-width: 0; }
+  .hqty { width: 44px; text-align: right; }
+  .hamt { width: 76px; text-align: right; white-space: nowrap; }
   .hnone { color: var(--secondary-text-color); }
   .ed-body.flush { padding-top: 0; }
   .drows { max-height: 60vh; overflow-y: auto; margin-bottom: 8px; }
