@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.3";
+const CARD_VERSION = "0.6.4";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -281,6 +281,7 @@ class ShoppingTripsCard extends HTMLElement {
       </ha-card>
       <div id="editor" class="fullscreen hidden"></div>
       <div id="panel" class="fullscreen hidden"></div>
+      <div id="subpanel" class="fullscreen hidden"></div>
       <div id="dialog" class="overlay hidden"></div>
       <input id="tripPhotos" type="file" accept="image/*" multiple hidden>
       <input id="onePhoto" class="pick" type="file" accept="image/*" hidden>
@@ -828,17 +829,7 @@ class ShoppingTripsCard extends HTMLElement {
     show();
 
     $("idBack").addEventListener("click", () => this._closePanel());
-    $("idHistory")?.addEventListener("click", () => {
-      // Every purchase of an item with this name, newest trip first: date and unit price
-      const name = item.name.toLowerCase();
-      const rows = this._data.records
-        .filter((r) => r.name.toLowerCase() === name)
-        .map((r) => ({ r, trip: this._trip(r.trip_id) }))
-        .filter((x) => x.trip)
-        .sort((a, b) => b.trip.finished_at - a.trip.finished_at)
-        .map(({ r, trip }) => [dateText(trip.finished_at), r.unit_price != null ? money(r.unit_price) : "—"]);
-      this._dialog({ title: `${item.name}: purchase history`, rows, cancel: null, ok: "Close" });
-    });
+    $("idHistory")?.addEventListener("click", () => this._openItemHistory(item.name));
     $("idFewer").addEventListener("click", () => {
       if (draft.quantity > 1) draft.quantity--;
       show();
@@ -949,6 +940,43 @@ class ShoppingTripsCard extends HTMLElement {
         barcode: $("idBarcode").value.trim() || null,
       });
       if (saved !== undefined) this._closePanel();
+    });
+  }
+
+  /** Full screen over the item details: every purchase of an item with this name, newest trip first. */
+  _openItemHistory(itemName) {
+    const name = itemName.toLowerCase();
+    const rows = this._data.records
+      .filter((r) => r.name.toLowerCase() === name)
+      .map((r) => ({ r, trip: this._trip(r.trip_id) }))
+      .filter((x) => x.trip)
+      .sort((a, b) => b.trip.finished_at - a.trip.finished_at);
+    const sub = this.shadowRoot.getElementById("subpanel");
+    sub.innerHTML = `
+      <div class="ed-top">
+        <button id="ihBack" class="icon" title="Back">${icon("arrow-left")}</button>
+        <div class="title">${esc(itemName)}<div class="sub">Purchase history</div></div>
+      </div>
+      <div class="section hrow"><span>DATE</span><span>UNIT PRICE</span></div>
+      <div class="ed-body flush">
+        ${
+          rows.length
+            ? rows
+                .map(
+                  ({ r, trip }) => `
+              <div class="hrow line">
+                <span>${esc(dateText(trip.finished_at))}</span>
+                <span class="${r.unit_price != null ? "hprice" : "hnone"}">${r.unit_price != null ? esc(money(r.unit_price)) : "—"}</span>
+              </div>`
+                )
+                .join("")
+            : `<div class="empty">No purchases yet</div>`
+        }
+      </div>`;
+    sub.classList.remove("hidden");
+    this.shadowRoot.getElementById("ihBack").addEventListener("click", () => {
+      sub.classList.add("hidden");
+      sub.innerHTML = "";
     });
   }
 
@@ -1958,6 +1986,11 @@ const STYLES = `
     color: var(--primary-text-color); padding: 14px 4px; font-size: 16px;
   }
   .dbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  .hrow { display: flex; justify-content: space-between; gap: 16px; padding: 9px 16px 9px 20px; }
+  .hrow.line { min-height: 52px; box-sizing: border-box; align-items: center; border-bottom: 1px solid var(--divider-color); font-size: 16px; color: var(--primary-text-color); }
+  .hprice { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
+  .hnone { color: var(--secondary-text-color); }
+  .ed-body.flush { padding-top: 0; }
   .drows { max-height: 60vh; overflow-y: auto; margin-bottom: 8px; }
   .drow { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); font-size: 15px; }
   .dval { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
