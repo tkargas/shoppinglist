@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.5";
+const CARD_VERSION = "0.6.6";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -413,6 +413,13 @@ class ShoppingTripsCard extends HTMLElement {
     const crossed = items.filter((i) => i.is_purchased).sort((a, b) => (b.purchased_at || 0) - (a.purchased_at || 0));
 
     let html = "";
+    if (pending.length) {
+      // Estimated spend for what's still on the list: quantity × last unit price
+      const priced = pending.filter((i) => i.last_unit_price != null);
+      const total = priced.reduce((s, i) => s + (i.quantity || 1) * i.last_unit_price, 0);
+      const unpriced = pending.length - priced.length;
+      html += `<div class="estimate">Est. total ${esc(money(total))}${unpriced ? `  ·  ${unpriced} without price` : ""}</div>`;
+    }
     if (pending.length === 0) html += `<div class="empty">Your list is empty<br>Add items above</div>`;
     html += pending.map((i) => this._itemRowHtml(i)).join("");
     if (pending.length) html += `<div class="hint">Swipe right ✓ bought · Swipe left ✗ not bought</div>`;
@@ -1901,6 +1908,10 @@ const STYLES = `
     border: none; border-radius: 8px; padding: 10px 16px; background: ${GREEN}; color: #fff; font-weight: 600;
   }
   .empty { text-align: center; padding: 32px 16px; color: var(--secondary-text-color); }
+  .estimate {
+    padding: 10px 16px 10px 20px; font-size: 15px; color: var(--primary-text-color);
+    background: var(--secondary-background-color, rgba(127,127,127,.15)); border-bottom: 1px solid var(--divider-color);
+  }
   .hint { text-align: center; padding: 10px; font-size: 12px; color: var(--secondary-text-color); }
   .section {
     background: ${GREEN}; color: #fff; font-size: 13px; font-weight: bold; letter-spacing: .05em;
