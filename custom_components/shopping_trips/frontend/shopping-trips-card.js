@@ -4,13 +4,16 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.8";
+const CARD_VERSION = "0.6.9";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/** An extra _dialog button; pressing it resolves the dialog to { extra: key }. */
+const extraButton = (x) =>
+  `<button class="link${x.danger ? " danger" : ""}" data-extra="${esc(x.key)}">${esc(x.label)}</button>`;
 const money = (n) => "$" + Number(n).toFixed(2);
 /** 2 → "2", 0.75 → "0.75" */
 const qtyText = (q) => String(Number(q));
@@ -25,8 +28,6 @@ const dateText = (ms) =>
   new Date(ms).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 const shortDate = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 const icon = (name) => `<ha-icon icon="mdi:${name}"></ha-icon>`;
-/** What _dialog resolves to when its extra (alt) button is pressed. */
-const DIALOG_ALT = Symbol("alt");
 
 // ── Receipts: image shrinking, text reading (Tesseract.js in the browser) and line parsing ──
 
@@ -567,10 +568,25 @@ class ShoppingTripsCard extends HTMLElement {
       input: "Store (optional)",
       optional: true,
       ok: "Save Trip",
-      alt: "Edit items",
+      extras: [
+        { key: "edit", label: "Edit items", top: true },
+        { key: "reset", label: "Reset trip", danger: true },
+      ],
     });
-    if (store === DIALOG_ALT) this._openCurrentTrip(list.id);
+    if (store?.extra === "edit") this._openCurrentTrip(list.id);
+    else if (store?.extra === "reset") await this._confirmResetTrip(list.id);
     else if (store !== null) await this._ws("finish", { list_id: list.id, store });
+  }
+
+  /** Asks, then puts every item bought in the unsaved trip back on the list. Returns true when reset. */
+  async _confirmResetTrip(listId) {
+    const n = this._currentTripItems(listId).length;
+    const ok = await this._dialog({
+      title: "Reset this trip?",
+      message: `All ${n} bought item${n === 1 ? "" : "s"} go back on the list, as if you hadn't started shopping.`,
+      ok: "Reset",
+    });
+    return !!ok && (await this._ws("items/reset_trip", { list_id: listId })) !== undefined;
   }
 
   /** Items bought in the trip that hasn't been saved yet (what Finish Shopping would save). */
@@ -595,13 +611,7 @@ class ShoppingTripsCard extends HTMLElement {
     const $ = (id) => this.shadowRoot.getElementById(id);
     $("ctBack").addEventListener("click", () => this._closePanel());
     $("ctReset").addEventListener("click", async () => {
-      const n = this._currentTripItems(listId).length;
-      const ok = await this._dialog({
-        title: "Reset this trip?",
-        message: `All ${n} bought item${n === 1 ? "" : "s"} go back on the list, as if you hadn't started shopping.`,
-        ok: "Reset",
-      });
-      if (ok && (await this._ws("items/reset_trip", { list_id: listId })) !== undefined) this._closePanel();
+      if (await this._confirmResetTrip(listId)) this._closePanel();
     });
     this._renderCurrentTrip();
   }
@@ -1902,7 +1912,7 @@ class ShoppingTripsCard extends HTMLElement {
    * A small modal inside the card. Resolves to: the typed text (input), the chosen key (choices),
    * true (ok) — or null when cancelled. With optional, an empty input is accepted.
    */
-  _dialog({ title, message, input, inputType = "text", value = "", optional = false, choices, rows, ok = "OK", cancel = "Cancel", alt }) {
+  _dialog({ title, message, input, inputType = "text", value = "", optional = false, choices, rows, ok = "OK", cancel = "Cancel", extras = [] }) {
     const overlay = this.shadowRoot.getElementById("dialog");
     return new Promise((resolve) => {
       overlay.innerHTML = `
@@ -1920,9 +1930,14 @@ class ShoppingTripsCard extends HTMLElement {
                 }</div>`
               : ""
           }
+          ${
+            extras.some((x) => x.top)
+              ? `<div class="dbuttons start">${extras.filter((x) => x.top).map((x) => extraButton(x)).join("")}</div>`
+              : ""
+          }
           <div class="dbuttons">
+            ${extras.filter((x) => !x.top).map((x) => extraButton(x)).join("")}
             ${cancel ? `<button class="link" data-act="cancel">${esc(cancel)}</button>` : ""}
-            ${alt ? `<button class="link" data-act="alt">${esc(alt)}</button>` : ""}
             ${choices ? "" : `<button class="primary" data-act="ok">${esc(ok)}</button>`}
           </div>
         </div>`;
@@ -1943,7 +1958,7 @@ class ShoppingTripsCard extends HTMLElement {
         b.addEventListener("click", () => {
           if (b.dataset.k) close(b.dataset.k);
           else if (b.dataset.act === "ok") submit();
-          else if (b.dataset.act === "alt") close(DIALOG_ALT);
+          else if (b.dataset.extra) close({ extra: b.dataset.extra });
           else close(null);
         })
       );
@@ -2096,6 +2111,8 @@ const STYLES = `
   .drow { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); font-size: 15px; }
   .dval { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
   .dbuttons .link { width: auto; padding: 10px 12px; }
+  .dbuttons.start { justify-content: flex-start; margin-top: 0; }
+  .dbuttons .link.danger { color: var(--error-color, #db4437); }
   .status { color: ${GREEN}; font-weight: 600; }
   .receipt-mark { color: ${GREEN}; display: inline-flex; }
   .icon.light { color: #fff; padding: 2px; }

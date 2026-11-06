@@ -48,8 +48,8 @@ list: Shopping List   # optional: which list to open first
 - Add items by typing, or pick an existing item from the suggestions.
 - ⋮ next to the list name: new, rename or delete lists.
 - **Finish Shopping** saves the bought items as a trip; they stay crossed off on the list. Its dialog also has
-  **Edit items**: change any of them to not bought or put them back on the list, or **Reset trip** to put them
-  all back and start again.
+  **Edit items** (change any of them to not bought or put them back on the list) and **Reset trip** (put them
+  all back and start again).
 - The history button opens **Shopping Trips**: search by item or store, tap a trip to see its items.
 - In a trip, tap an item to edit it full screen: quantity (decimals allowed), unit price, total
   (calculated, or tap it to type your own), a note, sub-items, and the last price paid. ⋮ has Unpriced first,
