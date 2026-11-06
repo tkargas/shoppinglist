@@ -270,6 +270,18 @@ class ShoppingStore:
         return [item["photo"]] if item.get("photo") else []
 
     @callback
+    def reset_trip(self, list_id: str) -> int:
+        """Puts every item bought in the current (not yet saved) trip back on the list. Returns how many."""
+        self.get_list(list_id)
+        count = 0
+        for item in self.items_for(list_id):
+            if item["is_purchased"] and not item["is_skipped"] and item.get("in_trip", True):
+                item.update(is_purchased=False, is_skipped=False, in_trip=True, purchased_at=None)
+                count += 1
+        self._changed()
+        return count
+
+    @callback
     def delete_crossed(self, list_id: str) -> list[str]:
         """Deletes every crossed-off item in a list; returns their photo files to remove."""
         gone = [i for i in self.items_for(list_id) if i["is_purchased"]]

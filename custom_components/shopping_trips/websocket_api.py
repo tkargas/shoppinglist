@@ -47,6 +47,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_item_set_state,
         ws_item_delete,
         ws_items_delete_crossed,
+        ws_items_reset_trip,
         ws_finish,
         ws_trip_update,
         ws_trip_delete,
@@ -323,3 +324,10 @@ def ws_item_remove_photo(hass, connection, msg) -> None:
 @_handles_errors
 def ws_items_import(hass, connection, msg) -> None:
     connection.send_result(msg["id"], {"count": _store(hass).import_items(msg["list_id"], msg["items"])})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/items/reset_trip", vol.Required("list_id"): str})
+@callback
+@_handles_errors
+def ws_items_reset_trip(hass, connection, msg) -> None:
+    connection.send_result(msg["id"], {"count": _store(hass).reset_trip(msg["list_id"])})
