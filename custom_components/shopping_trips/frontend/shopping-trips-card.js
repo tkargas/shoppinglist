@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.6";
+const CARD_VERSION = "0.6.7";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -1960,6 +1960,11 @@ const STYLES = `
   .fullscreen {
     position: fixed; inset: 0; z-index: 9; display: flex; flex-direction: column;
     background: var(--primary-background-color, var(--card-background-color, #fff)); color: var(--primary-text-color);
+    /* iPhone: the Companion app draws under the status bar and notch, so keep the top bar and the bottom
+       clear of them. These insets are 0 everywhere else (Android, desktop). */
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-sizing: border-box;
   }
   .ed-top {
     display: flex; align-items: center; gap: 6px; padding: 8px 12px; min-height: 56px; box-sizing: border-box;
