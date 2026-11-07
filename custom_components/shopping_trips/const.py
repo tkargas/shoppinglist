@@ -3,7 +3,7 @@
 DOMAIN = "shopping_trips"
 
 # Keep in step with manifest.json "version"; also cache-busts the card URL.
-VERSION = "0.6.9"
+VERSION = "0.6.10"
 
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1

@@ -41,7 +41,7 @@ list: Shopping List   # optional: which list to open first
 - Tap a crossed-off item to put it back on the list.
 - While there are items on the list, the top shows an **estimated total**: quantity × last unit price, with a
   count of items that have no price yet.
-- ⓘ on a row opens the item: name, quantity (− FEWER / + MORE), favourite, category, list, last purchased date, purchase history (date, quantity, unit price and total), barcode (type it or
+- ⓘ on a row opens the item: name, quantity (− FEWER / + MORE), favourite, category, list, last purchased date, purchase history (date, quantity, unit price and total; tap one to open it in its trip), barcode (type it or
   SCAN a photo of it), note, photo (take or choose), last unit price, delete.
 - ⋮ next to the list name also has **Export list (CSV)**, **Import list (CSV)** (same format as the Android
   app) and **Settings**, which shows the card and integration versions.

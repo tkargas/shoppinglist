@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.9";
+const CARD_VERSION = "0.6.10";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -394,6 +394,7 @@ class ShoppingTripsCard extends HTMLElement {
     if (this._editors.length) this._refreshEditor();
     if (this._viewer) this._refreshViewer();
     if (this._tripEdit) this._renderCurrentTrip();
+    if (this._itemHistory) this._renderItemHistory();
   }
 
   // ── Shopping list view ──────────────────────────────────────────────────
@@ -1034,12 +1035,7 @@ class ShoppingTripsCard extends HTMLElement {
 
   /** Full screen over the item details: every purchase of an item with this name, newest trip first. */
   _openItemHistory(itemName) {
-    const name = itemName.toLowerCase();
-    const rows = this._data.records
-      .filter((r) => r.name.toLowerCase() === name)
-      .map((r) => ({ r, trip: this._trip(r.trip_id) }))
-      .filter((x) => x.trip)
-      .sort((a, b) => b.trip.finished_at - a.trip.finished_at);
+    this._itemHistory = itemName;
     const sub = this.shadowRoot.getElementById("subpanel");
     sub.innerHTML = `
       <div class="ed-top">
@@ -1049,28 +1045,46 @@ class ShoppingTripsCard extends HTMLElement {
       <div class="section hrow">
         <span class="hdate">DATE</span><span class="hqty">QTY</span><span class="hamt">UNIT</span><span class="hamt">TOTAL</span>
       </div>
-      <div class="ed-body flush">
-        ${
-          rows.length
-            ? rows
-                .map(
-                  ({ r, trip }) => `
-              <div class="hrow line">
-                <span class="hdate">${esc(shortDate(trip.finished_at))}</span>
-                <span class="hqty">${esc(qtyText(r.quantity))}</span>
-                <span class="hamt${r.unit_price != null ? "" : " hnone"}">${r.unit_price != null ? esc(money(r.unit_price)) : "—"}</span>
-                <span class="hamt${r.total != null ? " hprice" : " hnone"}">${r.total != null ? esc(money(r.total)) : "—"}</span>
-              </div>`
-                )
-                .join("")
-            : `<div class="empty">No purchases yet</div>`
-        }
-      </div>`;
+      <div id="ihRows" class="ed-body flush"></div>`;
     sub.classList.remove("hidden");
     this.shadowRoot.getElementById("ihBack").addEventListener("click", () => {
+      this._itemHistory = null;
       sub.classList.add("hidden");
       sub.innerHTML = "";
     });
+    this._renderItemHistory();
+  }
+
+  /** Fills the purchase history rows; re-run on every data change so edits show straight away. */
+  _renderItemHistory() {
+    const box = this.shadowRoot.getElementById("ihRows");
+    if (!box || !this._itemHistory) return;
+    const name = this._itemHistory.toLowerCase();
+    const rows = this._data.records
+      .filter((r) => r.name.toLowerCase() === name)
+      .map((r) => ({ r, trip: this._trip(r.trip_id) }))
+      .filter((x) => x.trip)
+      .sort((a, b) => b.trip.finished_at - a.trip.finished_at);
+    box.innerHTML = rows.length
+      ? rows
+          .map(
+            ({ r, trip }) => `
+        <div class="hrow line tap" data-id="${esc(r.id)}">
+          <span class="hdate">${esc(shortDate(trip.finished_at))}</span>
+          <span class="hqty">${esc(qtyText(r.quantity))}</span>
+          <span class="hamt${r.unit_price != null ? "" : " hnone"}">${r.unit_price != null ? esc(money(r.unit_price)) : "—"}</span>
+          <span class="hamt${r.total != null ? " hprice" : " hnone"}">${r.total != null ? esc(money(r.total)) : "—"}</span>
+        </div>`
+          )
+          .join("")
+      : `<div class="empty">No purchases yet</div>`;
+    // A purchase opens in the saved trip's item editor: quantity, unit price, total, note, sub-items
+    box.querySelectorAll(".hrow.tap").forEach((row) =>
+      row.addEventListener("click", () => {
+        const r = this._record(row.dataset.id);
+        if (r) this._openEditor({ tripId: r.trip_id, recordId: r.id, parentId: r.parent_id || null });
+      })
+    );
   }
 
   // ── Trip history view ───────────────────────────────────────────────────
@@ -2081,7 +2095,7 @@ const STYLES = `
     border: 1px solid var(--divider-color); color: var(--primary-text-color); font-weight: 600;
   }
   .overlay {
-    position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.5);
+    position: fixed; inset: 0; z-index: 11; background: rgba(0,0,0,.5);
     display: flex; align-items: center; justify-content: center; padding: 16px;
   }
   .overlay.hidden { display: none; }
@@ -2099,6 +2113,9 @@ const STYLES = `
   }
   .dbuttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   .hrow { display: flex; justify-content: space-between; gap: 16px; padding: 9px 16px 9px 20px; }
+  /* The trip item editor opens over item details and purchase history; dialogs (z 11) go over it */
+  #editor { z-index: 10; }
+  .hrow.line.tap { cursor: pointer; }
   .hrow.line { min-height: 52px; box-sizing: border-box; align-items: center; border-bottom: 1px solid var(--divider-color); font-size: 16px; color: var(--primary-text-color); }
   .hprice { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
   .hrow { gap: 8px; }
