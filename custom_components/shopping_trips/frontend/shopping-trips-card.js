@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.11";
+const CARD_VERSION = "0.6.12";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -1765,12 +1765,15 @@ class ShoppingTripsCard extends HTMLElement {
     ed.override = !!r?.total_override;
     const isSub = !!ed.parentId;
     const title = `${r ? "Edit" : "New"} ${isSub ? "Sub-item" : "Item"}`;
+    // Which trip this is from: the store (or the trip's list when no store was recorded) and its date
+    const trip = this._trip(ed.tripId);
+    const from = trip ? [trip.store || trip.list_name, shortDate(trip.finished_at)].filter(Boolean).join("  ·  ") : "";
     const names = [...new Set(this._data.items.map((i) => i.name))].sort((a, b) => a.localeCompare(b));
 
     this._editorEl.innerHTML = `
       <div class="ed-top">
         <button id="edBack" class="icon" title="Back without saving">${icon("arrow-left")}</button>
-        <div class="title">${esc(title)}</div>
+        <div class="title">${esc(title)}${from ? `<div class="sub">${esc(from)}</div>` : ""}</div>
         ${r ? `<button id="edDelete" class="icon" title="Delete">${icon("delete")}</button>` : ""}
         <button id="edSave" class="primary">Save</button>
       </div>
