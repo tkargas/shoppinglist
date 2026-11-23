@@ -4,7 +4,7 @@
  *
  * Views: the shopping list, trip history, and one trip. Trip items open in a full-screen editor.
  */
-const CARD_VERSION = "0.6.10";
+const CARD_VERSION = "0.6.11";
 
 const GREEN = "#4CAF50";
 const ORANGE = "#E08A3C";
@@ -1070,7 +1070,10 @@ class ShoppingTripsCard extends HTMLElement {
           .map(
             ({ r, trip }) => `
         <div class="hrow line tap" data-id="${esc(r.id)}">
-          <span class="hdate">${esc(shortDate(trip.finished_at))}</span>
+          <span class="hdate">${esc(shortDate(trip.finished_at))}${
+            // Which trip it came from: the store, or the trip's list when no store was recorded
+            trip.store || trip.list_name ? `<span class="hfrom">${esc(trip.store || trip.list_name)}</span>` : ""
+          }</span>
           <span class="hqty">${esc(qtyText(r.quantity))}</span>
           <span class="hamt${r.unit_price != null ? "" : " hnone"}">${r.unit_price != null ? esc(money(r.unit_price)) : "—"}</span>
           <span class="hamt${r.total != null ? " hprice" : " hnone"}">${r.total != null ? esc(money(r.total)) : "—"}</span>
@@ -2120,6 +2123,7 @@ const STYLES = `
   .hprice { font-weight: bold; color: ${GREEN}; white-space: nowrap; }
   .hrow { gap: 8px; }
   .hdate { flex: 1; min-width: 0; }
+  .hfrom { display: block; margin-top: 2px; font-size: 13px; color: var(--secondary-text-color); overflow-wrap: anywhere; }
   .hqty { width: 44px; text-align: right; }
   .hamt { width: 76px; text-align: right; white-space: nowrap; }
   .hnone { color: var(--secondary-text-color); }
